@@ -1,44 +1,28 @@
-"""OpenWrt ubus API Constants."""
+"""OpenWrt ubus API Basic Constants."""
 
+# Basic ubus API constants
 API_DEF_DEBUG = True
 API_DEF_SESSION_ID = "00000000000000000000000000000000"
 API_DEF_TIMEOUT = 15
 API_DEF_VERIFY = False
 
 API_ERROR = "error"
-API_GET = "get"
 API_MESSAGE = "message"
-API_METHOD_BOARD = "board"
-API_METHOD_GET = "get"
-API_METHOD_GET_CLIENTS = "get_clients"
-API_METHOD_INFO = "info"
-API_METHOD_LOGIN = "login"
-API_METHOD_READ = "read"
-API_METHOD_REBOOT = "reboot"
-API_PARAM_CONFIG = "config"
-API_PARAM_PASSWORD = "password"
-API_PARAM_PATH = "path"
-API_PARAM_USERNAME = "username"
-API_PARAM_TYPE = "type"
 API_RESULT = "result"
 API_RPC_CALL = "call"
 API_RPC_ID = 1
 API_RPC_LIST = "list"
 API_RPC_VERSION = "2.0"
-API_SUBSYS_DHCP = "dhcp"
-API_SUBSYS_FILE = "file"
-API_SUBSYS_HOSTAPD = "hostapd.*"
-API_SUBSYS_SESSION = "session"
-API_SUBSYS_SYSTEM = "system"
-API_SUBSYS_UCI = "uci"
 API_UBUS_RPC_SESSION = "ubus_rpc_session"
-API_SUBSYS_IWINFO = "iwinfo"
-API_METHOD_GET_AP = "devices"
-API_METHOD_GET_STA = "assoclist"
-API_SUBSYS_SYSTEMINFO = "system"
-API_METHOD_GET_SYSTEMINFO = "info"
-API_SUBSYS_QMODEM = "modem_ctrl"
-API_METHOD_GET_QMODEM = "info"
-API_RPC_CALL = "call"
+
+# Basic parameters
+API_PARAM_PASSWORD = "password"
+API_PARAM_USERNAME = "username"
+
+# Basic subsystems
+API_SUBSYS_SESSION = "session"
+
+# Basic methods
+API_METHOD_LOGIN = "login"
 
 HTTP_STATUS_OK = 200

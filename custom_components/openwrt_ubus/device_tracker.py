@@ -240,6 +240,11 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
         return SourceType.ROUTER
 
     @property
+    def icon(self) -> str:
+        """Return the icon for the device tracker."""
+        return "mdi:devices"
+
+    @property
     def is_connected(self) -> bool:
         """Return true if the device is connected to the network."""
         # Get device statistics from shared coordinator

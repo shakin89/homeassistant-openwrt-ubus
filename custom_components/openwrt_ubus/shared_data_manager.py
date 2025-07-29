@@ -13,8 +13,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .Ubus import Ubus, HostapdUbus, IwinfoUbus, QmodemUbus
-from .const import CONF_DHCP_SOFTWARE, CONF_WIRELESS_SOFTWARE, DOMAIN, DEFAULT_DHCP_SOFTWARE, DEFAULT_WIRELESS_SOFTWARE
+from .extended_ubus import ExtendedUbus
+from .const import (
+    CONF_DHCP_SOFTWARE, 
+    CONF_WIRELESS_SOFTWARE, 
+    DOMAIN, 
+    DEFAULT_DHCP_SOFTWARE, 
+    DEFAULT_WIRELESS_SOFTWARE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,10 +48,10 @@ class SharedUbusDataManager:
         }
         
         # Initialize ubus clients
-        self._ubus_clients: Dict[str, Ubus] = {}
+        self._ubus_clients: Dict[str, ExtendedUbus] = {}
         self._session = None
         
-    async def _get_ubus_client(self, client_type: str = "default") -> Ubus:
+    async def _get_ubus_client(self, client_type: str = "default") -> ExtendedUbus:
         """Get or create ubus client instance."""
         if client_type not in self._ubus_clients:
             if self._session is None:
@@ -55,14 +61,8 @@ class SharedUbusDataManager:
             username = self.entry.data[CONF_USERNAME]
             password = self.entry.data[CONF_PASSWORD]
             
-            if client_type == "hostapd":
-                client = HostapdUbus(url, username, password, session=self._session)
-            elif client_type == "iwinfo":
-                client = IwinfoUbus(url, username, password, session=self._session)
-            elif client_type == "qmodem":
-                client = QmodemUbus(url, username, password, session=self._session)
-            else:
-                client = Ubus(url, username, password, session=self._session)
+            # Use ExtendedUbus for all client types now
+            client = ExtendedUbus(url, username, password, session=self._session)
             
             # Connect to the client
             try:
@@ -137,46 +137,44 @@ class SharedUbusDataManager:
             raise UpdateFailed(f"Error fetching device statistics: {exc}")
 
     async def _fetch_hostapd_data(self, mac2name: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
-        """Fetch data from hostapd."""
+        """Fetch data from hostapd using optimized batch calls."""
         client = await self._get_ubus_client("hostapd")
         try:
             # Get AP devices
-            ap_devices_result = await client.get_ap_devices()
-            ap_devices = client.parse_ap_devices(ap_devices_result) if ap_devices_result else []
+            ap_devices_result = await client.get_hostapd()
+            ap_devices = client.parse_hostapd_ap_devices(ap_devices_result) if ap_devices_result else []
             
             device_statistics = {}
+            
+            # Use batch call to get STA data for all AP devices at once
+            sta_data_batch = await client.get_all_sta_data_batch(ap_devices, is_hostapd=True)
+            
             for ap_device in ap_devices:
-                try:
-                    # Get station devices for tracking
-                    sta_devices_result = await client.get_sta_devices(ap_device)
-                    sta_devices = client.parse_sta_devices(sta_devices_result) if sta_devices_result else []
+                if ap_device not in sta_data_batch:
+                    continue
                     
-                    # Get detailed statistics for sensors
-                    sta_stats_result = await client.get_sta_statistics(ap_device)
-                    sta_stats = client.parse_sta_statistics(sta_stats_result) if sta_stats_result else {}
+                sta_devices = sta_data_batch[ap_device].get('devices', [])
+                sta_stats = sta_data_batch[ap_device].get('statistics', {})
+                
+                for mac in sta_devices:
+                    normalized_mac = mac.upper()
+                    hostname = mac2name.get(normalized_mac, {}).get("hostname", normalized_mac.replace(":", ""))
+                    ip_address = mac2name.get(normalized_mac, {}).get("ip", "Unknown IP")
                     
-                    for mac in sta_devices:
-                        normalized_mac = mac.upper()
-                        hostname = mac2name.get(normalized_mac, {}).get("hostname", normalized_mac.replace(":", ""))
-                        ip_address = mac2name.get(normalized_mac, {}).get("ip", "Unknown IP")
-                        
-                        # Merge connection info with detailed statistics
-                        device_info = {
-                            "mac": normalized_mac,
-                            "hostname": hostname,
-                            "ap_device": ap_device,
-                            "connected": True,
-                            "ip_address": ip_address,
-                        }
-                        
-                        # Add statistics if available
-                        if normalized_mac in sta_stats:
-                            device_info.update(sta_stats[normalized_mac])
-                        
-                        device_statistics[normalized_mac] = device_info
-                        
-                except Exception as exc:
-                    _LOGGER.debug("Error fetching hostapd data for %s: %s", ap_device, exc)
+                    # Merge connection info with detailed statistics
+                    device_info = {
+                        "mac": normalized_mac,
+                        "hostname": hostname,
+                        "ap_device": ap_device,
+                        "connected": True,
+                        "ip_address": ip_address,
+                    }
+                    
+                    # Add statistics if available
+                    if normalized_mac in sta_stats:
+                        device_info.update(sta_stats[normalized_mac])
+                    
+                    device_statistics[normalized_mac] = device_info
             
             return {"device_statistics": device_statistics}
         except Exception as exc:
@@ -184,7 +182,7 @@ class SharedUbusDataManager:
             raise UpdateFailed(f"Error fetching hostapd data: {exc}")
 
     async def _fetch_iwinfo_data(self, mac2name: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
-        """Fetch data from iwinfo."""
+        """Fetch data from iwinfo using optimized batch calls."""
         client = await self._get_ubus_client("iwinfo")
         try:
             # Get AP devices
@@ -192,38 +190,36 @@ class SharedUbusDataManager:
             ap_devices = client.parse_ap_devices(ap_devices_result) if ap_devices_result else []
             
             device_statistics = {}
+            
+            # Use batch call to get STA data for all AP devices at once
+            sta_data_batch = await client.get_all_sta_data_batch(ap_devices, is_hostapd=False)
+            
             for ap_device in ap_devices:
-                try:
-                    # Get station devices for tracking
-                    sta_devices_result = await client.get_sta_devices(ap_device)
-                    sta_devices = client.parse_sta_devices(sta_devices_result) if sta_devices_result else []
+                if ap_device not in sta_data_batch:
+                    continue
                     
-                    # Get detailed statistics for sensors
-                    sta_stats_result = await client.get_sta_statistics(ap_device)
-                    sta_stats = client.parse_sta_statistics(sta_stats_result) if sta_stats_result else {}
+                sta_devices = sta_data_batch[ap_device].get('devices', [])
+                sta_stats = sta_data_batch[ap_device].get('statistics', {})
+                
+                for mac in sta_devices:
+                    normalized_mac = mac.upper()
+                    hostname = mac2name.get(normalized_mac, {}).get("hostname", normalized_mac.replace(":", ""))
+                    ip_address = mac2name.get(normalized_mac, {}).get("ip", "Unknown IP")
                     
-                    for mac in sta_devices:
-                        normalized_mac = mac.upper()
-                        hostname = mac2name.get(normalized_mac, {}).get("hostname", normalized_mac.replace(":", ""))
-                        ip_address = mac2name.get(normalized_mac, {}).get("ip", "Unknown IP")
-                        
-                        # Merge connection info with detailed statistics
-                        device_info = {
-                            "mac": normalized_mac,
-                            "hostname": hostname,
-                            "ap_device": ap_device,
-                            "connected": True,
-                            "ip_address": ip_address,
-                        }
-                        
-                        # Add statistics if available
-                        if normalized_mac in sta_stats:
-                            device_info.update(sta_stats[normalized_mac])
-                        
-                        device_statistics[normalized_mac] = device_info
-                        
-                except Exception as exc:
-                    _LOGGER.debug("Error fetching iwinfo data for %s: %s", ap_device, exc)
+                    # Merge connection info with detailed statistics
+                    device_info = {
+                        "mac": normalized_mac,
+                        "hostname": hostname,
+                        "ap_device": ap_device,
+                        "connected": True,
+                        "ip_address": ip_address,
+                    }
+                    
+                    # Add statistics if available
+                    if normalized_mac in sta_stats:
+                        device_info.update(sta_stats[normalized_mac])
+                    
+                    device_statistics[normalized_mac] = device_info
             
             return {"device_statistics": device_statistics}
         except Exception as exc:

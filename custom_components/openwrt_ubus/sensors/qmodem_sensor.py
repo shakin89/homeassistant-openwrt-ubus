@@ -240,12 +240,29 @@ class QModemSensor(CoordinatorEntity, SensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info for the QModem device."""
+        # Try to get manufacturer from QModem data
+        manufacturer = "Unknown"
+        model = "QModem Device"
+        
+        if self.coordinator.data and self.coordinator.data.get("qmodem_info"):
+            qmodem_info = self.coordinator.data["qmodem_info"]
+            try:
+                manufacturer_value = self._extract_qmodem_value(qmodem_info, "qmodem_manufacturer")
+                if manufacturer_value:
+                    manufacturer = manufacturer_value
+                
+                revision_value = self._extract_qmodem_value(qmodem_info, "qmodem_revision")
+                if revision_value:
+                    model = f"QModem {revision_value}"
+            except Exception:
+                pass  # Use default values if extraction fails
+        
         # Create a separate device for QModem
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self._host}_qmodem")},
             name=f"QModem ({self._host})",
-            manufacturer="Unknown",
-            model="QModem Device",
+            manufacturer=manufacturer,
+            model=model,
             configuration_url=f"http://{self._host}",
             via_device=(DOMAIN, self._host),
         )

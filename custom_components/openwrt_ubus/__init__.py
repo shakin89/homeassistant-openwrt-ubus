@@ -25,7 +25,7 @@ from .const import (
     PLATFORMS,
     WIRELESS_SOFTWARES,
 )
-from .Ubus import Ubus
+from .extended_ubus import ExtendedUbus
 from .shared_data_manager import SharedUbusDataManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         url = f"http://{entry.data[CONF_HOST]}/ubus"
         session = async_get_clientsession(hass)
-        ubus = Ubus(url, entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD], session=session)
+        ubus = ExtendedUbus(url, entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD], session=session)
 
         # Test connection
         session_id = await ubus.connect()
