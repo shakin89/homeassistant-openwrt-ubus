@@ -106,16 +106,28 @@ class SharedUbusDataManager:
 
     async def _fetch_qmodem_info(self) -> Dict[str, Any]:
         """Fetch QModem information if available."""
-        if not self.hass.data[DOMAIN].get("modem_ctrl_available", False):
-            return {"qmodem_info": None}
-            
+        # First check if we previously determined modem_ctrl is unavailable
+        previously_unavailable = not self.hass.data[DOMAIN].get("modem_ctrl_available", False)
+        
         client = await self._get_ubus_client("qmodem")
         try:
             qmodem_info = await client.get_qmodem_info()
             _LOGGER.debug("QModem data fetched successfully")
+            
+            # If we successfully got data and it was previously unavailable, update the flag
+            if previously_unavailable:
+                self.hass.data[DOMAIN]["modem_ctrl_available"] = True
+                _LOGGER.info("QModem/modem_ctrl is now available - updating status")
+            
             return {"qmodem_info": qmodem_info}
         except Exception as exc:
             _LOGGER.debug("Error fetching QModem info: %s", exc)
+            
+            # If this fails, we should periodically retry to check if modem_ctrl becomes available
+            # Don't immediately mark as unavailable, keep trying
+            if not previously_unavailable:
+                _LOGGER.warning("QModem/modem_ctrl temporarily unavailable, will keep retrying")
+            
             return {"qmodem_info": None}
 
     async def _fetch_device_statistics(self) -> Dict[str, Any]:

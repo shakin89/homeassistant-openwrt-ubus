@@ -232,6 +232,7 @@ class QModemSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._host = coordinator.data_manager.entry.data[CONF_HOST]
+        self.hass = coordinator.hass  # Add reference to hass
         # Remove the 'qmodem_' prefix from description.key to avoid duplication
         key_without_prefix = description.key.replace("qmodem_", "", 1)
         self._attr_unique_id = f"{self._host}_qmodem_{key_without_prefix}"
@@ -272,20 +273,25 @@ class QModemSensor(CoordinatorEntity, SensorEntity):
         """Return the value reported by the sensor."""
         if not self.coordinator.data:
             _LOGGER.debug("No coordinator data available for %s", self.entity_description.key)
-            return None
+            return "unavailable"
 
         qmodem_info = self.coordinator.data.get("qmodem_info")
         if qmodem_info is None:
             _LOGGER.debug("No qmodem_info in coordinator data for %s", self.entity_description.key)
-            return None
+            # Check if modem_ctrl is available, if not return specific message
+            modem_ctrl_available = self.hass.data.get(DOMAIN, {}).get("modem_ctrl_available", False)
+            if not modem_ctrl_available:
+                return "modem_ctrl_unavailable"
+            return "no_data"
 
         # Parse the qmodem data and extract the requested value
         try:
-            return self._extract_qmodem_value(qmodem_info, self.entity_description.key)
+            value = self._extract_qmodem_value(qmodem_info, self.entity_description.key)
+            return value if value is not None else "no_data"
         except Exception as exc:
             _LOGGER.error("Error extracting qmodem value for %s: %s", self.entity_description.key, exc)
             _LOGGER.debug("QModem data causing error: %s", qmodem_info)
-            return None
+            return "error"
 
     def _extract_qmodem_value(self, qmodem_info: dict, key: str) -> Any:
         """Extract specific value from QModem info."""
@@ -405,28 +411,41 @@ class QModemSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return True if coordinator is available and qmodem/modem_ctrl is accessible."""
+        # Always show as available if coordinator is updating successfully
+        # This allows the entity to display "Unknown" state instead of being disabled
         if not self.coordinator.last_update_success:
-            return False
+            # Only mark as unavailable if there's a clear connection failure
+            return True  # Changed: be more permissive about availability
         
-        # Check if we have qmodem data
-        if not self.coordinator.data:
-            return False
-            
-        qmodem_info = self.coordinator.data.get("qmodem_info")
-        # Accept any non-None qmodem_info as available
-        return qmodem_info is not None
+        # Even if no qmodem data, keep entity available to show proper state
+        return True
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return additional state attributes."""
+        modem_ctrl_available = self.hass.data.get(DOMAIN, {}).get("modem_ctrl_available", False)
+        
         attributes = {
             "router_host": self._host,
             "last_update": self.coordinator.last_update_success,
             "device_type": "qmodem",
+            "modem_ctrl_available": modem_ctrl_available,
         }
 
-        # Add raw qmodem info for debugging if available
-        if self.coordinator.data and self.coordinator.data.get("qmodem_info"):
-            attributes["raw_data"] = str(self.coordinator.data["qmodem_info"])
+        # Add status information based on data availability
+        if self.coordinator.data:
+            qmodem_info = self.coordinator.data.get("qmodem_info")
+            if qmodem_info is not None:
+                attributes["data_status"] = "available"
+                attributes["raw_data"] = str(qmodem_info)
+            else:
+                attributes["data_status"] = "no_data"
+        else:
+            attributes["data_status"] = "no_coordinator_data"
+
+        # Add coordinator status
+        attributes["coordinator_last_update_success"] = self.coordinator.last_update_success
+        if hasattr(self.coordinator, 'last_exception') and self.coordinator.last_exception:
+            attributes["last_error"] = str(self.coordinator.last_exception)
 
         return attributes
