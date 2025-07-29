@@ -1,0 +1,11 @@
+{
+  "domain": "openwrt_ubus",
+  "name": "OpenWrt ubus",
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "https://github.com/fujr/homeassistant-openwrt-ubus",
+  "iot_class": "local_polling",
+  "loggers": ["openwrt_ubus"],
+  "requirements": ["aiohttp>=3.0.0"],
+  "version": "0.0.1"
+}
