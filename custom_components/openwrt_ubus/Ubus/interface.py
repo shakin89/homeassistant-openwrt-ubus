@@ -82,6 +82,9 @@ class Ubus:
             self.session = aiohttp.ClientSession()
             self._session_created_internally = True
 
+    async def call_apis(self, apis: list):
+        self._ensure_session()
+
     async def api_call(
         self,
         rpc_method,
@@ -159,8 +162,6 @@ class Ubus:
                 return None
         else:
             return json_response[API_RESULT]
-
-        return None
 
     def api_debugging(self, debug_api):
         """Enable/Disable API calls debugging."""

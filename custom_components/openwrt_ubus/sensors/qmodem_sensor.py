@@ -16,25 +16,19 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_HOST,
-    CONF_PASSWORD,
-    CONF_USERNAME,
     PERCENTAGE,
     UnitOfElectricPotential,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
-    DataUpdateCoordinator,
-    UpdateFailed,
 )
 
 from ..const import DOMAIN
-from ..Ubus import Ubus
+from ..shared_data_manager import SharedDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -119,7 +113,7 @@ SENSOR_DESCRIPTIONS = [
         icon="mdi:sim",
         entity_category=None,
     ),
-    # QModem Signal Quality sensors
+    # QModem Signal Quality sensors (progress_bar type)
     SensorEntityDescription(
         key="qmodem_lte_rsrp",
         name="LTE RSRP",
@@ -190,250 +184,168 @@ async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
-) -> None:
+) -> SharedDataUpdateCoordinator | None:
     """Set up OpenWrt QModem sensors from a config entry."""
     # Check if modem_ctrl is available from the initial setup
     modem_ctrl_available = hass.data.get(DOMAIN, {}).get("modem_ctrl_available", False)
     
-    # Create QModem coordinator
-    coordinator = QModemCoordinator(hass, entry)
-
-    # Store async_add_entities for dynamic entity management
-    coordinator.async_add_entities = async_add_entities
+    if not modem_ctrl_available:
+        _LOGGER.info("QModem entities not created - modem_ctrl is not available")
+        return None
+    
+    # Get shared data manager
+    data_manager_key = f"data_manager_{entry.entry_id}"
+    data_manager = hass.data[DOMAIN][data_manager_key]
+    
+    # Create coordinator using shared data manager
+    coordinator = SharedDataUpdateCoordinator(
+        hass,
+        data_manager,
+        ["qmodem_info"],  # Data types this coordinator needs
+        f"{DOMAIN}_qmodem_{entry.data[CONF_HOST]}",
+        SCAN_INTERVAL,
+    )
 
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()
     
-    # Only create QModem sensor entities if modem_ctrl is available initially
-    if modem_ctrl_available:
-        entities = [
-            QModemSensor(coordinator, description)
-            for description in SENSOR_DESCRIPTIONS
-        ]
-        async_add_entities(entities, True)
-        coordinator.qmodem_entities_created = True
-        _LOGGER.info("QModem entities created - modem_ctrl is available")
-    else:
-        _LOGGER.info("QModem entities not created - modem_ctrl is not available")
-
-    # Register cleanup callbacks
-    entry.async_on_unload(coordinator.async_shutdown)
+    # Create QModem sensor entities
+    entities = [
+        QModemSensor(coordinator, description)
+        for description in SENSOR_DESCRIPTIONS
+    ]
+    async_add_entities(entities, True)
+    _LOGGER.info("QModem entities created - modem_ctrl is available")
 
     return coordinator
 
 
-class QModemCoordinator(DataUpdateCoordinator):
-    """Class to manage fetching QModem information from the router."""
+class QModemSensor(CoordinatorEntity, SensorEntity):
+    """Representation of a QModem sensor."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Initialize."""
-        self.entry = entry
-        self.host = entry.data[CONF_HOST]
-        self.username = entry.data[CONF_USERNAME]
-        self.password = entry.data[CONF_PASSWORD]
+    def __init__(
+        self,
+        coordinator: SharedDataUpdateCoordinator,
+        description: SensorEntityDescription,
+    ) -> None:
+        """Initialize the QModem sensor."""
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._host = coordinator.data_manager.entry.data[CONF_HOST]
+        # Remove the 'qmodem_' prefix from description.key to avoid duplication
+        key_without_prefix = description.key.replace("qmodem_", "", 1)
+        self._attr_unique_id = f"{self._host}_qmodem_{key_without_prefix}"
+        self._attr_has_entity_name = True
 
-        # Get Home Assistant's HTTP client session
-        session = async_get_clientsession(hass)
-
-        self.url = f"http://{self.host}/ubus"
-        self.ubus = Ubus(self.url, self.username, self.password, session=session)
-
-        # QModem management attributes
-        self.qmodem_entities_created = False
-        self.async_add_entities = None  # Will be set in async_setup_entry
-        self.qmodem_entities = []  # Track created qmodem entities
-
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=f"{DOMAIN}_qmodem_{self.host}",
-            update_interval=SCAN_INTERVAL,
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info for the QModem device."""
+        # Create a separate device for QModem
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._host}_qmodem")},
+            name=f"QModem ({self._host})",
+            manufacturer="Unknown",
+            model="QModem Device",
+            configuration_url=f"http://{self._host}",
+            via_device=(DOMAIN, self._host),
         )
 
-    async def async_shutdown(self):
-        """Shutdown the coordinator and close connections."""
+    @property
+    def native_value(self) -> Any:
+        """Return the value reported by the sensor."""
+        if not self.coordinator.data:
+            _LOGGER.debug("No coordinator data available for %s", self.entity_description.key)
+            return None
+
+        qmodem_info = self.coordinator.data.get("qmodem_info")
+        if qmodem_info is None:
+            _LOGGER.debug("No qmodem_info in coordinator data for %s", self.entity_description.key)
+            return None
+
+        # Parse the qmodem data and extract the requested value
         try:
-            await self.ubus.close()
+            return self._extract_qmodem_value(qmodem_info, self.entity_description.key)
         except Exception as exc:
-            _LOGGER.debug("Error closing ubus connection: %s", exc)
+            _LOGGER.error("Error extracting qmodem value for %s: %s", self.entity_description.key, exc)
+            _LOGGER.debug("QModem data causing error: %s", qmodem_info)
+            return None
 
-    def _has_qmodem_data(self) -> bool:
-        """Check if current data contains valid qmodem information."""
-        if not self.data:
-            return False
-        
-        # Check if any qmodem sensor key has data
-        qmodem_keys = [desc.key for desc in SENSOR_DESCRIPTIONS if desc.key.startswith("qmodem_")]
-        return any(key in self.data and self.data[key] is not None for key in qmodem_keys)
-
-    async def _async_update_data(self) -> dict[str, Any]:
-        """Update QModem information via ubus API."""
-        try:
-            # Ensure connection
-            if await self.ubus.connect() is None:
-                raise UpdateFailed("Failed to connect to router")
-
-            # First check if modem_ctrl is available
-            modem_ctrl_available = False
-            try:
-                modem_ctrl_list = await self.ubus.list_modem_ctrl()
-                modem_ctrl_available = modem_ctrl_list is not None and bool(modem_ctrl_list)
-                _LOGGER.debug("Modem_ctrl availability check: %s", modem_ctrl_available)
-            except Exception as exc:
-                _LOGGER.debug("Modem_ctrl not available: %s", exc)
-                modem_ctrl_available = False
-
-            # Try to get QModem info only if modem_ctrl is available
-            qmodem_info = None
-            qmodem_data_available = False
-            if modem_ctrl_available:
-                try:
-                    qmodem_info = await self.ubus.get_qmodem_info()
-                    qmodem_data_available = qmodem_info is not None and bool(qmodem_info.get("info"))
-                except Exception as exc:
-                    _LOGGER.debug("QModem info not available: %s", exc)
-                    qmodem_data_available = False
-
-            _LOGGER.debug("Modem_ctrl available: %s, QModem data available: %s", 
-                         modem_ctrl_available, qmodem_data_available)
-            if qmodem_info:
-                _LOGGER.debug("QModem info received: %s", qmodem_info)
-
-            # Manage qmodem entities dynamically based on modem_ctrl availability
-            await self._manage_qmodem_entities(modem_ctrl_available and qmodem_data_available)
-
-            # Process the qmodem data
-            if qmodem_info and qmodem_data_available:
-                processed_data = self._process_qmodem_info(qmodem_info)
-                _LOGGER.debug("Processed qmodem data: %s", processed_data)
-                return processed_data
-            else:
-                # Return empty dict if no qmodem data
-                return {}
-
-        except Exception as exc:
-            _LOGGER.warning("Failed to update qmodem info: %s", exc)
-            raise UpdateFailed(f"Error fetching qmodem info: {exc}") from exc
-
-    async def _manage_qmodem_entities(self, qmodem_available: bool) -> None:
-        """Manage qmodem entities - create when available, remove when not."""
-        if self.async_add_entities is None:
-            return
-
-        # QModem became available - create entities
-        if qmodem_available and not self.qmodem_entities_created:
-            _LOGGER.info("QModem/modem_ctrl became available, creating qmodem sensor entities")
-            
-            # Get entity registry to check for existing entities
-            entity_registry = er.async_get(self.hass)
-            
-            qmodem_sensors = [
-                desc for desc in SENSOR_DESCRIPTIONS 
-                if desc.key.startswith("qmodem_")
-            ]
-            
-            new_entities = []
-            for description in qmodem_sensors:
-                key_without_prefix = description.key.replace("qmodem_", "")
-                unique_id = f"{self.host}_qmodem_{key_without_prefix}"
-                existing_entity_id = entity_registry.async_get_entity_id(
-                    "sensor", DOMAIN, unique_id
-                )
-                
-                if existing_entity_id:
-                    _LOGGER.debug(
-                        "QModem sensor entity %s already exists with entity_id %s, skipping creation",
-                        unique_id, existing_entity_id
-                    )
-                    continue
-                
-                new_entities.append(QModemSensor(self, description))
-            
-            if new_entities:
-                self.qmodem_entities.extend(new_entities)
-                self.async_add_entities(new_entities, True)
-                _LOGGER.info("Created %d new qmodem sensor entities", len(new_entities))
-            else:
-                _LOGGER.debug("No new qmodem sensor entities to create (all already exist)")
-            
-            self.qmodem_entities_created = True
-
-        # QModem became unavailable - remove entities
-        elif not qmodem_available and self.qmodem_entities_created:
-            _LOGGER.info("QModem/modem_ctrl became unavailable, removing qmodem sensor entities")
-            
-            # Get entity registry to remove entities
-            entity_registry = er.async_get(self.hass)
-            
-            qmodem_sensors = [
-                desc for desc in SENSOR_DESCRIPTIONS 
-                if desc.key.startswith("qmodem_")
-            ]
-            
-            removed_count = 0
-            for description in qmodem_sensors:
-                key_without_prefix = description.key.replace("qmodem_", "")
-                unique_id = f"{self.host}_qmodem_{key_without_prefix}"
-                existing_entity_id = entity_registry.async_get_entity_id(
-                    "sensor", DOMAIN, unique_id
-                )
-                
-                if existing_entity_id:
-                    entity_registry.async_remove(existing_entity_id)
-                    removed_count += 1
-                    _LOGGER.debug("Removed qmodem sensor entity: %s", existing_entity_id)
-            
-            # Clear tracked entities
-            self.qmodem_entities.clear()
-            self.qmodem_entities_created = False
-            
-            if removed_count > 0:
-                _LOGGER.info("Removed %d qmodem sensor entities", removed_count)
-            else:
-                _LOGGER.debug("No qmodem sensor entities to remove")
-
-    def _process_qmodem_info(self, qmodem_info: dict[str, Any]) -> dict[str, Any]:
-        """Process QModem information and extract relevant sensors."""
-        data = {}
-        
-        # Navigate to the modem_info list
+    def _extract_qmodem_value(self, qmodem_info: dict, key: str) -> Any:
+        """Extract specific value from QModem info."""
+        # Follow the same pattern as backup_sensor.py QModemCoordinator
         info_list = qmodem_info.get("info", [])
         if not info_list:
-            return data
-
+            _LOGGER.debug("No info list found in qmodem_info for key %s", key)
+            return None
+            
+        # Process each info item
         for info_item in info_list:
             modem_info_list = info_item.get("modem_info", [])
             if not modem_info_list:
                 continue
-
-            # Track current context (LTE or NR5G) as we process items
-            current_context = "lte"  # Default context
-
-            # Process each modem info item
+                
+            # Track context for LTE vs 5G NR signals
+            current_context = None
+            lte_signals = {}
+            nr5g_signals = {}
+                
+            # Process each modem info item to find our value
             for item in modem_info_list:
                 class_origin = item.get("class_origin", "")
-                key = item.get("key", "")
+                item_key = item.get("key", "")
                 value = item.get("value", "")
                 item_type = item.get("type", "")
-
-                # Update context based on section markers
-                if key == "LTE":
-                    current_context = "lte"
-                elif key.startswith("NR5G-"):
-                    current_context = "nr5g"
-
-                # Only process Base Information, SIM Information, and progress_bar types
+                
+                # Update context based on special keys
+                if item_key == "LTE":
+                    current_context = "LTE"
+                elif item_key.startswith("NR"):  # NR5G-NSA or any NR variant for 5G
+                    current_context = "NR5G"
+                
+                # Process based on sensor key and class origin
                 if class_origin == "Base Information":
-                    self._process_base_info(key, value, data)
+                    result = self._process_base_info_item(item_key, value, key)
+                    if result is not None:
+                        return result
                 elif class_origin == "SIM Information":
-                    self._process_sim_info(key, value, data)
-                elif item_type == "progress_bar":
-                    self._process_signal_info(key, value, current_context, data)
+                    result = self._process_sim_info_item(item_key, value, key)
+                    if result is not None:
+                        return result
+                elif item_type == "progress_bar" and class_origin == "Cell Information":
+                    # Store signal values with context
+                    if current_context == "LTE" and item_key in ["RSRP", "RSRQ", "RSSI", "SINR"]:
+                        lte_signals[item_key] = value
+                    elif current_context == "NR5G" and item_key in ["RSRP", "RSRQ", "SINR"]:
+                        nr5g_signals[item_key] = value
+        
+        # Check if we found the requested signal value
+        if key == "qmodem_lte_rsrp" and "RSRP" in lte_signals:
+            numeric_match = re.search(r'(-?\d+)', str(lte_signals["RSRP"]))
+            return int(numeric_match.group(1)) if numeric_match else None
+        elif key == "qmodem_lte_rsrq" and "RSRQ" in lte_signals:
+            numeric_match = re.search(r'(-?\d+)', str(lte_signals["RSRQ"]))
+            return int(numeric_match.group(1)) if numeric_match else None
+        elif key == "qmodem_lte_rssi" and "RSSI" in lte_signals:
+            numeric_match = re.search(r'(-?\d+)', str(lte_signals["RSSI"]))
+            return int(numeric_match.group(1)) if numeric_match else None
+        elif key == "qmodem_lte_sinr" and "SINR" in lte_signals:
+            numeric_match = re.search(r'(\d+)', str(lte_signals["SINR"]))
+            return int(numeric_match.group(1)) if numeric_match else None
+        elif key == "qmodem_nr5g_rsrp" and "RSRP" in nr5g_signals:
+            numeric_match = re.search(r'(-?\d+)', str(nr5g_signals["RSRP"]))
+            return int(numeric_match.group(1)) if numeric_match else None
+        elif key == "qmodem_nr5g_rsrq" and "RSRQ" in nr5g_signals:
+            numeric_match = re.search(r'(-?\d+)', str(nr5g_signals["RSRQ"]))
+            return int(numeric_match.group(1)) if numeric_match else None
+        elif key == "qmodem_nr5g_sinr" and "SINR" in nr5g_signals:
+            numeric_match = re.search(r'(\d+)', str(nr5g_signals["SINR"]))
+            return int(numeric_match.group(1)) if numeric_match else None
+        
+        _LOGGER.debug("No matching value found for key %s in qmodem data", key)
+        return None
 
-        return data
-
-    def _process_base_info(self, key: str, value: str, data: dict[str, Any]) -> None:
-        """Process base information from QModem."""
+    def _process_base_info_item(self, item_key: str, value: str, target_key: str) -> Any:
+        """Process base information item and return value if it matches target key."""
         key_mapping = {
             "manufacturer": "qmodem_manufacturer",
             "revision": "qmodem_revision",
@@ -442,109 +354,36 @@ class QModemCoordinator(DataUpdateCoordinator):
             "voltage": "qmodem_voltage",
             "connect_status": "qmodem_connect_status",
         }
-
-        data_type_mapping = {
-            "voltage": int,
-            "temperature": int,
-            "connect_status": bool,
-        }
-        if key in key_mapping:
-            data_type = data_type_mapping.get(key, str)
-            if data_type == int:
-                value = re.sub(r'[^\d.-]', '', value)  # Remove non-numeric characters
-                value = int(value) if value else None
-            elif data_type == bool:
-                # yes true or 1
-                value = value.lower() in ("yes", "true", "1")
-            else:
-                value = str(value)
         
-            data[key_mapping[key]] = value
+        if item_key in key_mapping and key_mapping[item_key] == target_key:
+            if target_key == "qmodem_temperature":
+                # Extract numeric value from temperature string (e.g., "71°C")
+                numeric_match = re.search(r'(\d+)', str(value))
+                return int(numeric_match.group(1)) if numeric_match else None
+            elif target_key == "qmodem_voltage":
+                # Extract numeric value from voltage string (e.g., "3980 mV")
+                numeric_match = re.search(r'(\d+)', str(value))
+                return int(numeric_match.group(1)) if numeric_match else None
+            else:
+                return str(value) if value else None
+        return None
 
-    def _process_sim_info(self, key: str, value: str, data: dict[str, Any]) -> None:
-        """Process SIM information from QModem."""
+    def _process_sim_info_item(self, item_key: str, value: str, target_key: str) -> Any:
+        """Process SIM information item and return value if it matches target key."""
         key_mapping = {
             "SIM Status": "qmodem_sim_status",
             "ISP": "qmodem_isp",
             "SIM Slot": "qmodem_sim_slot",
             "IMEI": "qmodem_imei",
-            "IMSI": "qmodem_imsi",
+            "IMSI": "qmodem_imsi", 
             "ICCID": "qmodem_iccid",
         }
-
-        if key in key_mapping:
-            data[key_mapping[key]] = value
-
-    def _process_signal_info(self, key: str, value: str, context: str, data: dict[str, Any]) -> None:
-        """Process signal information (progress_bar type) from QModem."""
-        if key == "RSRP":
-            if context == "lte":
-                data["qmodem_lte_rsrp"] = self._parse_numeric_value(value)
-            elif context == "nr5g":
-                data["qmodem_nr5g_rsrp"] = self._parse_numeric_value(value)
-        elif key == "RSRQ":
-            if context == "lte":
-                data["qmodem_lte_rsrq"] = self._parse_numeric_value(value)
-            elif context == "nr5g":
-                data["qmodem_nr5g_rsrq"] = self._parse_numeric_value(value)
-        elif key == "RSSI" and context == "lte":
-            data["qmodem_lte_rssi"] = self._parse_numeric_value(value)
-        elif key == "SINR":
-            if context == "lte":
-                data["qmodem_lte_sinr"] = self._parse_numeric_value(value)
-            elif context == "nr5g":
-                data["qmodem_nr5g_sinr"] = self._parse_numeric_value(value)
-
-    def _parse_numeric_value(self, value: str) -> float | None:
-        """Parse numeric value from string, handling various formats."""
-        if not value or value in ["-", "", "N/A"]:
-            return None
-
-        try:
-            # Remove any non-numeric characters except minus and decimal point
-            numeric_match = re.search(r'-?\d+\.?\d*', str(value))
-            if numeric_match:
-                return float(numeric_match.group())
-        except (ValueError, TypeError):
-            pass
+        
+        if item_key in key_mapping and key_mapping[item_key] == target_key:
+            # Clean up value - remove newlines and extra spaces
+            clean_value = str(value).replace('\n', ' ').strip() if value else None
+            return clean_value if clean_value else None
         return None
-
-class QModemSensor(CoordinatorEntity, SensorEntity):
-    """Representation of a QModem sensor."""
-
-    def __init__(
-        self,
-        coordinator: QModemCoordinator,
-        description: SensorEntityDescription,
-    ) -> None:
-        """Initialize the QModem sensor."""
-        super().__init__(coordinator)
-        self.entity_description = description
-        # Remove the 'qmodem_' prefix from description.key to avoid duplication
-        key_without_prefix = description.key.replace("qmodem_", "", 1)
-        self._attr_unique_id = f"{coordinator.host}_qmodem_{key_without_prefix}"
-        self._attr_has_entity_name = True
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device info for the QModem device."""
-        # Create a separate device for QModem
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"{self.coordinator.host}_qmodem")},
-            name=f"QModem ({self.coordinator.host})",
-            manufacturer="Unknown",
-            model="QModem Device",
-            configuration_url=f"http://{self.coordinator.host}",
-            via_device=(DOMAIN, self.coordinator.host),
-        )
-
-    @property
-    def native_value(self) -> Any:
-        """Return the value reported by the sensor."""
-        if not self.coordinator.data:
-            return None
-
-        return self.coordinator.data.get(self.entity_description.key)
 
     @property
     def available(self) -> bool:
@@ -552,25 +391,25 @@ class QModemSensor(CoordinatorEntity, SensorEntity):
         if not self.coordinator.last_update_success:
             return False
         
-        # Check if modem_ctrl is available from the current data update
-        # We consider it available if we have any qmodem data
+        # Check if we have qmodem data
         if not self.coordinator.data:
             return False
             
-        # QModem sensor is available if coordinator has data and this sensor has a value
-        return self.coordinator.data.get(self.entity_description.key) is not None
+        qmodem_info = self.coordinator.data.get("qmodem_info")
+        # Accept any non-None qmodem_info as available
+        return qmodem_info is not None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return additional state attributes."""
         attributes = {
-            "router_host": self.coordinator.host,
+            "router_host": self._host,
             "last_update": self.coordinator.last_update_success,
             "device_type": "qmodem",
         }
 
         # Add raw qmodem info for debugging if available
-        if self.coordinator.data:
-            attributes["raw_data"] = str(self.coordinator.data)
+        if self.coordinator.data and self.coordinator.data.get("qmodem_info"):
+            attributes["raw_data"] = str(self.coordinator.data["qmodem_info"])
 
         return attributes

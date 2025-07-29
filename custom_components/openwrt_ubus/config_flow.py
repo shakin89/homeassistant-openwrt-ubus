@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .Ubus import Ubus
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_DHCP_SOFTWARE,
@@ -22,6 +22,7 @@ from .const import (
     DOMAIN,
     WIRELESS_SOFTWARES,
 )
+from .Ubus import Ubus
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,8 +46,11 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
+    # Get Home Assistant's HTTP client session
+    session = async_get_clientsession(hass)
+    
     url = f"http://{data[CONF_HOST]}/ubus"
-    ubus = Ubus(url, data[CONF_USERNAME], data[CONF_PASSWORD])
+    ubus = Ubus(url, data[CONF_USERNAME], data[CONF_PASSWORD], session=session)
     
     try:
         # Test connection
@@ -62,7 +66,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         await ubus.close()
 
     # Return info that you want to store in the config entry.
-    return {"title": f"OpenWrt ubs {data[CONF_HOST]}"}
+    return {"title": f"OpenWrt ubus {data[CONF_HOST]}"}
 
 
 class OpenwrtUbusConfigFlow(ConfigFlow, domain=DOMAIN):

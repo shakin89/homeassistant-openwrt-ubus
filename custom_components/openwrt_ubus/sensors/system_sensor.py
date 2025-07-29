@@ -33,7 +33,7 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from ..const import DOMAIN
-from ..Ubus import Ubus
+from ..shared_data_manager import SharedDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -165,18 +165,25 @@ async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
-) -> None:
+) -> SharedDataUpdateCoordinator:
     """Set up OpenWrt system sensors from a config entry."""
-    # Create system info coordinator
-    coordinator = SystemInfoCoordinator(hass, entry)
-
-    # Store async_add_entities for dynamic entity management
-    coordinator.async_add_entities = async_add_entities
+    
+    # Get shared data manager
+    data_manager_key = f"data_manager_{entry.entry_id}"
+    data_manager = hass.data[DOMAIN][data_manager_key]
+    
+    # Create coordinator using shared data manager
+    coordinator = SharedDataUpdateCoordinator(
+        hass,
+        data_manager,
+        ["system_info", "system_board"],  # Data types this coordinator needs
+        f"{DOMAIN}_system_{entry.data[CONF_HOST]}",
+        SCAN_INTERVAL,
+    )
 
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()
-    
-    # Create system sensor entities
+
     entities = [
         SystemInfoSensor(coordinator, description)
         for description in SENSOR_DESCRIPTIONS
@@ -184,8 +191,7 @@ async def async_setup_entry(
 
     async_add_entities(entities, True)
 
-    # Register cleanup callbacks
-    entry.async_on_unload(coordinator.async_shutdown)
+    return coordinator
 
 class SystemInfoCoordinator(DataUpdateCoordinator):
     """Class to manage fetching system information from the router."""
@@ -201,143 +207,39 @@ class SystemInfoCoordinator(DataUpdateCoordinator):
         session = async_get_clientsession(hass)
 
         self.url = f"http://{self.host}/ubus"
-        self.ubus = Ubus(self.url, self.username, self.password, session=session)
-
-        self.async_add_entities = None  # Will be set in async_setup_entry
-
-        super().__init__(
-            hass,
-            _LOGGER,
-            name=f"{DOMAIN}_system_{self.host}",
-            update_interval=SCAN_INTERVAL,
-        )
-
-    async def async_shutdown(self):
-        """Shutdown the coordinator and close connections."""
-        try:
-            await self.ubus.close()
-        except Exception as exc:
-            _LOGGER.debug("Error closing ubus connection: %s", exc)
-
-    async def _async_update_data(self) -> dict[str, Any]:
-        """Update system information via ubus API."""
-        try:
-            # Ensure connection
-            if await self.ubus.connect() is None:
-                raise UpdateFailed("Failed to connect to router")
-
-            # Get system info and board info
-            system_info = await self.ubus.system_info()
-            board_info = await self.ubus.system_board()
-
-            if not system_info:
-                raise UpdateFailed("Failed to get system information")
-
-            _LOGGER.debug("System info received: %s", system_info)
-            _LOGGER.debug("Board info received: %s", board_info)
-
-            # Process the data
-            processed_data = self._process_system_info(system_info, board_info)
-            _LOGGER.debug("Processed system data: %s", processed_data)
-
-            return processed_data
-
-        except Exception as exc:
-            _LOGGER.warning("Failed to update system info: %s", exc)
-            raise UpdateFailed(f"Error fetching system info: {exc}") from exc
-
-    def _process_system_info(
-        self,
-        system_info: dict[str, Any],
-        board_info: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Process raw system info into sensor data."""
-        data = {}
-
-        # Uptime (usually in seconds)
-        if "uptime" in system_info:
-            data["uptime"] = system_info["uptime"]
-
-        # Load averages
-        if "load" in system_info and isinstance(system_info["load"], list):
-            load = system_info["load"]
-            if len(load) >= 3:
-                data["load_1"] = load[0] / 1000
-                data["load_5"] = load[1] / 1000
-                data["load_15"] = load[2] / 1000
-
-        # Memory information (convert bytes to megabytes)
-        if "memory" in system_info:
-            memory = system_info["memory"]
-            if "total" in memory:
-                data["memory_total"] = round(memory["total"] / (1024 * 1024), 1)
-            if "free" in memory:
-                data["memory_free"] = round(memory["free"] / (1024 * 1024), 1)
-            if "buffered" in memory:
-                data["memory_buffered"] = round(memory["buffered"] / (1024 * 1024), 1)
-            if "shared" in memory:
-                data["memory_shared"] = round(memory["shared"] / (1024 * 1024), 1)
-
-            # Calculate memory usage percentage
-            if "total" in memory and "free" in memory:
-                total = memory["total"]
-                free = memory["free"]
-                if total > 0:
-                    used = total - free
-                    data["memory_usage_percent"] = round((used / total) * 100, 1)
-
-        # Swap information (convert bytes to megabytes)
-        if "swap" in system_info:
-            swap = system_info["swap"]
-            if "total" in swap:
-                data["swap_total"] = round(swap["total"] / (1024 * 1024), 1)
-            if "free" in swap:
-                data["swap_free"] = round(swap["free"] / (1024 * 1024), 1)
-
-        # Board information
-        if board_info:
-            if "kernel" in board_info:
-                data["board_kernel"] = board_info["kernel"]
-            if "hostname" in board_info:
-                data["board_hostname"] = board_info["hostname"]
-            if "model" in board_info:
-                data["board_model"] = board_info["model"]
-            if "system" in board_info:
-                data["board_system"] = board_info["system"]
-
-        return data
 
 class SystemInfoSensor(CoordinatorEntity, SensorEntity):
     """Representation of a system information sensor."""
 
     def __init__(
         self,
-        coordinator: SystemInfoCoordinator,
+        coordinator: SharedDataUpdateCoordinator,
         description: SensorEntityDescription,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
         self.entity_description = description
-        self._attr_unique_id = f"{coordinator.host}_{description.key}"
+        self._host = coordinator.data_manager.entry.data[CONF_HOST]
+        self._attr_unique_id = f"{self._host}_{description.key}"
         self._attr_has_entity_name = True
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info for the router."""
         # Try to get board info from coordinator data
-        board_model = self.coordinator.data.get("board_model", "Router") if self.coordinator.data else "Router"
-        board_hostname = self.coordinator.data.get("board_hostname") if self.coordinator.data else None
-        board_system = self.coordinator.data.get("board_system") if self.coordinator.data else None
+        board_model = self.coordinator.data.get("system_board", {}).get("model", "Router") if self.coordinator.data else "Router"
+        board_hostname = self.coordinator.data.get("system_board", {}).get("hostname") if self.coordinator.data else None
+        board_system = self.coordinator.data.get("system_board", {}).get("system") if self.coordinator.data else None
 
         # Use hostname for name if available, otherwise use host
-        device_name = board_hostname or f"OpenWrt Router ({self.coordinator.host})"
+        device_name = board_hostname or f"OpenWrt Router ({self._host})"
 
         return DeviceInfo(
-            identifiers={(DOMAIN, self.coordinator.host)},
+            identifiers={(DOMAIN, self._host)},
             name=device_name,
             manufacturer="OpenWrt",
             model=board_model,
-            configuration_url=f"http://{self.coordinator.host}",
+            configuration_url=f"http://{self._host}",
             sw_version=board_system,  # Use system info as software version
         )
 
@@ -347,7 +249,51 @@ class SystemInfoSensor(CoordinatorEntity, SensorEntity):
         if not self.coordinator.data:
             return None
 
-        return self.coordinator.data.get(self.entity_description.key)
+        return self._get_sensor_value()
+
+    def _get_sensor_value(self) -> Any:
+        """Get the sensor value from coordinator data."""
+        key = self.entity_description.key
+        
+        # Handle system info data
+        system_info = self.coordinator.data.get("system_info", {})
+        board_info = self.coordinator.data.get("system_board", {})
+        
+        # Map sensor keys to their data sources
+        if key == "uptime":
+            return system_info.get("uptime")
+        elif key in ["load_1", "load_5", "load_15"]:
+            load = system_info.get("load", [])
+            if isinstance(load, list) and len(load) >= 3:
+                load_map = {"load_1": 0, "load_5": 1, "load_15": 2}
+                return load[load_map[key]] / 1000 if key in load_map else None
+        elif key.startswith("memory_"):
+            memory = system_info.get("memory", {})
+            if key == "memory_total":
+                return round(memory.get("total", 0) / (1024 * 1024), 1) if memory.get("total") else None
+            elif key == "memory_free":
+                return round(memory.get("free", 0) / (1024 * 1024), 1) if memory.get("free") else None
+            elif key == "memory_buffered":
+                return round(memory.get("buffered", 0) / (1024 * 1024), 1) if memory.get("buffered") else None
+            elif key == "memory_shared":
+                return round(memory.get("shared", 0) / (1024 * 1024), 1) if memory.get("shared") else None
+            elif key == "memory_usage_percent":
+                total = memory.get("total", 0)
+                free = memory.get("free", 0)
+                if total > 0:
+                    used = total - free
+                    return round((used / total) * 100, 1)
+        elif key.startswith("swap_"):
+            swap = system_info.get("swap", {})
+            if key == "swap_total":
+                return round(swap.get("total", 0) / (1024 * 1024), 1) if swap.get("total") else None
+            elif key == "swap_free":
+                return round(swap.get("free", 0) / (1024 * 1024), 1) if swap.get("free") else None
+        elif key.startswith("board_"):
+            board_key = key.replace("board_", "")
+            return board_info.get(board_key)
+        
+        return None
 
     @property
     def available(self) -> bool:
@@ -358,7 +304,7 @@ class SystemInfoSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """Return additional state attributes."""
         attributes = {
-            "router_host": self.coordinator.host,
+            "router_host": self._host,
             "last_update": self.coordinator.last_update_success,
         }
 

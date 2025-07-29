@@ -26,6 +26,7 @@ from .const import (
     WIRELESS_SOFTWARES,
 )
 from .Ubus import Ubus
+from .shared_data_manager import SharedUbusDataManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,6 +91,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Store modem_ctrl availability in hass data
         hass.data[DOMAIN]["modem_ctrl_available"] = modem_ctrl_available
 
+        # Close the test connection
+        await ubus.close()
+
+        # Create shared data manager
+        data_manager = SharedUbusDataManager(hass, entry)
+        hass.data[DOMAIN][f"data_manager_{entry.entry_id}"] = data_manager
+
     except Exception as exc:
         raise ConfigEntryNotReady(f"Failed to connect to OpenWrt device at {entry.data[CONF_HOST]}: {exc}") from exc
 
@@ -107,6 +115,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
+        # Clean up shared data manager
+        data_manager_key = f"data_manager_{entry.entry_id}"
+        if DOMAIN in hass.data and data_manager_key in hass.data[DOMAIN]:
+            data_manager = hass.data[DOMAIN][data_manager_key]
+            try:
+                await data_manager.close()
+            except Exception as exc:
+                _LOGGER.debug("Error closing data manager: %s", exc)
+            hass.data[DOMAIN].pop(data_manager_key, None)
+
         # Clean up coordinators
         if DOMAIN in hass.data and "coordinators" in hass.data[DOMAIN]:
             coordinators = hass.data[DOMAIN]["coordinators"]
