@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
+from functools import wraps
 import logging
 from typing import Any, Dict, Optional
 
@@ -23,6 +24,56 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def ubus_auto_reconnect(max_retries: int = 1):
+    """Decorator to handle permission denied errors and auto-reconnect ubus client.
+    
+    Args:
+        max_retries: Maximum number of reconnection attempts (default: 1)
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            retries = 0
+            while retries <= max_retries:
+                try:
+                    return await func(self, *args, **kwargs)
+                except PermissionError as exc:
+                    if "Access denied" in str(exc) and retries < max_retries:
+                        _LOGGER.warning(
+                            "Permission denied in %s, attempting to reconnect (attempt %d/%d)", 
+                            func.__name__, retries + 1, max_retries + 1
+                        )
+                        
+                        # Clear all ubus clients to force reconnection
+                        for client_type, client in self._ubus_clients.items():
+                            try:
+                                await client.close()
+                                _LOGGER.debug("Closed ubus client: %s", client_type)
+                            except Exception as close_exc:
+                                _LOGGER.debug("Error closing ubus client %s: %s", client_type, close_exc)
+                        
+                        self._ubus_clients.clear()
+                        _LOGGER.info("Cleared all ubus clients, will reconnect on next call")
+                        
+                        retries += 1
+                        if retries <= max_retries:
+                            # Small delay before retry
+                            await asyncio.sleep(0.5)
+                            continue
+                    
+                    # If we've exhausted retries or it's not an access denied error, re-raise
+                    _LOGGER.error("Permission denied in %s after %d retries", func.__name__, retries)
+                    raise
+                except Exception as exc:
+                    # For non-permission errors, don't retry
+                    raise
+            
+            # This should never be reached, but just in case
+            raise RuntimeError(f"Unexpected state in {func.__name__} after {retries} retries")
+        return wrapper
+    return decorator
 
 
 class SharedUbusDataManager:
@@ -84,6 +135,7 @@ class SharedUbusDataManager:
         interval = self._update_intervals.get(data_type, timedelta(minutes=1))
         return datetime.now() - self._last_update[data_type] > interval
 
+    @ubus_auto_reconnect(max_retries=1)
     async def _fetch_system_info(self) -> Dict[str, Any]:
         """Fetch system information."""
         client = await self._get_ubus_client()
@@ -94,6 +146,7 @@ class SharedUbusDataManager:
             _LOGGER.error("Error fetching system info: %s", exc)
             raise UpdateFailed(f"Error fetching system info: {exc}")
 
+    @ubus_auto_reconnect(max_retries=1)
     async def _fetch_system_board(self) -> Dict[str, Any]:
         """Fetch system board information."""
         client = await self._get_ubus_client()
@@ -104,6 +157,7 @@ class SharedUbusDataManager:
             _LOGGER.error("Error fetching system board: %s", exc)
             raise UpdateFailed(f"Error fetching system board: {exc}")
 
+    @ubus_auto_reconnect(max_retries=1)
     async def _fetch_qmodem_info(self) -> Dict[str, Any]:
         """Fetch QModem information if available."""
         # First check if we previously determined modem_ctrl is unavailable
@@ -130,6 +184,7 @@ class SharedUbusDataManager:
             
             return {"qmodem_info": None}
 
+    @ubus_auto_reconnect(max_retries=1)
     async def _fetch_device_statistics(self) -> Dict[str, Any]:
         """Fetch device statistics from wireless interfaces."""
         wireless_software = self.entry.data.get(CONF_WIRELESS_SOFTWARE, "iwinfo")
@@ -148,6 +203,7 @@ class SharedUbusDataManager:
             _LOGGER.error("Error fetching device statistics: %s", exc)
             raise UpdateFailed(f"Error fetching device statistics: {exc}")
 
+    @ubus_auto_reconnect(max_retries=1)
     async def _fetch_hostapd_data(self, mac2name: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
         """Fetch data from hostapd using optimized batch calls."""
         client = await self._get_ubus_client("hostapd")
@@ -193,6 +249,7 @@ class SharedUbusDataManager:
             _LOGGER.error("Error fetching hostapd data: %s", exc)
             raise UpdateFailed(f"Error fetching hostapd data: {exc}")
 
+    @ubus_auto_reconnect(max_retries=1)
     async def _fetch_iwinfo_data(self, mac2name: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
         """Fetch data from iwinfo using optimized batch calls."""
         client = await self._get_ubus_client("iwinfo")
@@ -238,6 +295,7 @@ class SharedUbusDataManager:
             _LOGGER.error("Error fetching iwinfo data: %s", exc)
             raise UpdateFailed(f"Error fetching iwinfo data: {exc}")
 
+    @ubus_auto_reconnect(max_retries=1)
     async def _get_mac2name_mapping(self, dhcp_software: str) -> Dict[str, Dict[str, str]]:
         """Generate MAC to name/IP mapping based on DHCP server."""
         mac2name = {}
@@ -280,6 +338,30 @@ class SharedUbusDataManager:
         
         return mac2name
 
+    @ubus_auto_reconnect(max_retries=1)
+    async def _fetch_system_data_batch(self, system_types: set) -> Dict[str, Any]:
+        """Fetch system data in batch with auto-reconnect protection."""
+        combined_data = {}
+        system_client = await self._get_ubus_client()
+        
+        if "system_info" in system_types:
+            if await self._should_update("system_info"):
+                async with self._update_locks["system_info"]:
+                    system_info = await system_client.system_info()
+                    self._data_cache["system_info"] = {"system_info": system_info}
+                    self._last_update["system_info"] = datetime.now()
+            combined_data.update(self._data_cache["system_info"])
+        
+        if "system_board" in system_types:
+            if await self._should_update("system_board"):
+                async with self._update_locks["system_board"]:
+                    board_info = await system_client.system_board()
+                    self._data_cache["system_board"] = {"system_board": board_info}
+                    self._last_update["system_board"] = datetime.now()
+            combined_data.update(self._data_cache["system_board"])
+        
+        return combined_data
+
     async def get_data(self, data_type: str) -> Dict[str, Any]:
         """Get cached data or fetch if needed."""
         async with self._update_locks[data_type]:
@@ -319,23 +401,9 @@ class SharedUbusDataManager:
         
         # Fetch system data together if needed
         if system_types:
-            system_client = await self._get_ubus_client()
             try:
-                if "system_info" in system_types:
-                    if await self._should_update("system_info"):
-                        async with self._update_locks["system_info"]:
-                            system_info = await system_client.system_info()
-                            self._data_cache["system_info"] = {"system_info": system_info}
-                            self._last_update["system_info"] = datetime.now()
-                    combined_data.update(self._data_cache["system_info"])
-                
-                if "system_board" in system_types:
-                    if await self._should_update("system_board"):
-                        async with self._update_locks["system_board"]:
-                            board_info = await system_client.system_board()
-                            self._data_cache["system_board"] = {"system_board": board_info}
-                            self._last_update["system_board"] = datetime.now()
-                    combined_data.update(self._data_cache["system_board"])
+                system_data = await self._fetch_system_data_batch(system_types)
+                combined_data.update(system_data)
             except Exception as exc:
                 _LOGGER.error("Error fetching system data: %s", exc)
                 # Use cached data if available
@@ -376,6 +444,19 @@ class SharedUbusDataManager:
         else:
             self._data_cache.clear()
             self._last_update.clear()
+
+    async def force_reconnect_all_clients(self):
+        """Force reconnection of all ubus clients (for testing/debugging)."""
+        _LOGGER.info("Forcing reconnection of all ubus clients")
+        for client_type, client in self._ubus_clients.items():
+            try:
+                await client.close()
+                _LOGGER.debug("Closed ubus client: %s", client_type)
+            except Exception as exc:
+                _LOGGER.debug("Error closing ubus client %s: %s", client_type, exc)
+        
+        self._ubus_clients.clear()
+        _LOGGER.info("All ubus clients cleared, will reconnect on next call")
 
 
 class SharedDataUpdateCoordinator(DataUpdateCoordinator):
