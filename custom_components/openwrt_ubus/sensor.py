@@ -1,8 +1,7 @@
-"""Support for OpenWrt router sensors with dynamic module loading."""
+"""Support for OpenWrt router sensors."""
 
 from __future__ import annotations
 
-import importlib
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -10,14 +9,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
+from .sensors import system_sensor, qmodem_sensor, sta_sensor
 
 _LOGGER = logging.getLogger(__name__)
 
-# Sensor modules to load dynamically
+# Sensor modules to setup
 SENSOR_MODULES = [
-    "sensors.system_sensor",
-    "sensors.qmodem_sensor", 
-    "sensors.sta_sensor",
+    system_sensor,
+    qmodem_sensor, 
+    sta_sensor,
 ]
 
 
@@ -26,20 +26,17 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up OpenWrt sensors from a config entry using dynamic module loading."""
-    _LOGGER.info("Setting up OpenWrt sensors with dynamic loading")
+    """Set up OpenWrt sensors from a config entry."""
+    _LOGGER.info("Setting up OpenWrt sensors")
     
     coordinators = []
     
-    # Dynamically load and setup each sensor module
-    for module_name in SENSOR_MODULES:
+    # Setup each sensor module
+    for module in SENSOR_MODULES:
         try:
-            # Import the sensor module
-            full_module_name = f"custom_components.{DOMAIN}.{module_name}"
-            module = importlib.import_module(full_module_name)
-            
             # Check if module has async_setup_entry function
             if hasattr(module, 'async_setup_entry'):
+                module_name = module.__name__.split('.')[-1]
                 _LOGGER.debug("Loading sensor module: %s", module_name)
                 
                 # Call the module's setup function
@@ -49,16 +46,17 @@ async def async_setup_entry(
                     coordinators.append(coordinator)
                     _LOGGER.info("Successfully loaded sensor module: %s", module_name)
                 else:
+                    module_name = module.__name__.split('.')[-1]
                     _LOGGER.debug("Sensor module %s returned no coordinator", module_name)
             else:
+                module_name = module.__name__.split('.')[-1]
                 _LOGGER.warning("Sensor module %s has no async_setup_entry function", module_name)
                 
-        except ImportError as exc:
-            _LOGGER.warning("Failed to import sensor module %s: %s", module_name, exc)
         except Exception as exc:
+            module_name = getattr(module, '__name__', 'unknown').split('.')[-1]
             _LOGGER.error("Error setting up sensor module %s: %s", module_name, exc)
     
-    _LOGGER.info("Completed dynamic loading of %d sensor modules", len(coordinators))
+    _LOGGER.info("Completed loading of %d sensor modules", len(coordinators))
     
     # Store coordinators in hass data for cleanup
     if DOMAIN not in hass.data:
