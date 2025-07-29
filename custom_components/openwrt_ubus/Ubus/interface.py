@@ -228,6 +228,10 @@ class Ubus:
             },
         )
 
+    async def list_modem_ctrl(self):
+        """List available modem_ctrl subsystems."""
+        return await self.api_call(API_RPC_LIST, API_SUBSYS_QMODEM)
+
     async def get_qmodem_info(self):
         """Get QModem info."""
         return await self.api_call(API_RPC_CALL, API_SUBSYS_QMODEM, API_METHOD_GET_QMODEM)
@@ -361,8 +365,4 @@ class QmodemUbus(Ubus):
         verify=API_DEF_VERIFY,
     ):
         """Initialize the QModem client."""
-        super().__init__(host, username, password, session, timeout, verify
-    )
-    async def get_info(self):
-        """Get QModem info."""
-        return await self.api_call(API_RPC_CALL, API_SUBSYS_QMODEM, API_METHOD_GET_QMODEM)
+        super().__init__(host, username, password, session, timeout, verify)

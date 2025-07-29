@@ -192,6 +192,9 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up OpenWrt QModem sensors from a config entry."""
+    # Check if modem_ctrl is available from the initial setup
+    modem_ctrl_available = hass.data.get(DOMAIN, {}).get("modem_ctrl_available", False)
+    
     # Create QModem coordinator
     coordinator = QModemCoordinator(hass, entry)
 
@@ -201,16 +204,22 @@ async def async_setup_entry(
     # Fetch initial data
     await coordinator.async_config_entry_first_refresh()
     
-    # Create QModem sensor entities
-    entities = [
-        QModemSensor(coordinator, description)
-        for description in SENSOR_DESCRIPTIONS
-    ]
-
-    async_add_entities(entities, True)
+    # Only create QModem sensor entities if modem_ctrl is available initially
+    if modem_ctrl_available:
+        entities = [
+            QModemSensor(coordinator, description)
+            for description in SENSOR_DESCRIPTIONS
+        ]
+        async_add_entities(entities, True)
+        coordinator.qmodem_entities_created = True
+        _LOGGER.info("QModem entities created - modem_ctrl is available")
+    else:
+        _LOGGER.info("QModem entities not created - modem_ctrl is not available")
 
     # Register cleanup callbacks
     entry.async_on_unload(coordinator.async_shutdown)
+
+    return coordinator
 
 
 class QModemCoordinator(DataUpdateCoordinator):
@@ -264,25 +273,37 @@ class QModemCoordinator(DataUpdateCoordinator):
             if await self.ubus.connect() is None:
                 raise UpdateFailed("Failed to connect to router")
 
-            # Try to get QModem info
-            qmodem_info = None
-            qmodem_available = False
+            # First check if modem_ctrl is available
+            modem_ctrl_available = False
             try:
-                qmodem_info = await self.ubus.get_qmodem_info()
-                qmodem_available = qmodem_info is not None and bool(qmodem_info.get("info"))
+                modem_ctrl_list = await self.ubus.list_modem_ctrl()
+                modem_ctrl_available = modem_ctrl_list is not None and bool(modem_ctrl_list)
+                _LOGGER.debug("Modem_ctrl availability check: %s", modem_ctrl_available)
             except Exception as exc:
-                _LOGGER.debug("QModem info not available: %s", exc)
-                qmodem_available = False
+                _LOGGER.debug("Modem_ctrl not available: %s", exc)
+                modem_ctrl_available = False
 
-            _LOGGER.debug("QModem available: %s", qmodem_available)
+            # Try to get QModem info only if modem_ctrl is available
+            qmodem_info = None
+            qmodem_data_available = False
+            if modem_ctrl_available:
+                try:
+                    qmodem_info = await self.ubus.get_qmodem_info()
+                    qmodem_data_available = qmodem_info is not None and bool(qmodem_info.get("info"))
+                except Exception as exc:
+                    _LOGGER.debug("QModem info not available: %s", exc)
+                    qmodem_data_available = False
+
+            _LOGGER.debug("Modem_ctrl available: %s, QModem data available: %s", 
+                         modem_ctrl_available, qmodem_data_available)
             if qmodem_info:
                 _LOGGER.debug("QModem info received: %s", qmodem_info)
 
-            # Manage qmodem entities dynamically
-            await self._manage_qmodem_entities(qmodem_available)
+            # Manage qmodem entities dynamically based on modem_ctrl availability
+            await self._manage_qmodem_entities(modem_ctrl_available and qmodem_data_available)
 
             # Process the qmodem data
-            if qmodem_info and qmodem_available:
+            if qmodem_info and qmodem_data_available:
                 processed_data = self._process_qmodem_info(qmodem_info)
                 _LOGGER.debug("Processed qmodem data: %s", processed_data)
                 return processed_data
@@ -295,13 +316,13 @@ class QModemCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Error fetching qmodem info: {exc}") from exc
 
     async def _manage_qmodem_entities(self, qmodem_available: bool) -> None:
-        """Manage qmodem entities - create when available, mark unavailable when not."""
+        """Manage qmodem entities - create when available, remove when not."""
         if self.async_add_entities is None:
             return
 
         # QModem became available - create entities
         if qmodem_available and not self.qmodem_entities_created:
-            _LOGGER.info("QModem became available, creating qmodem sensor entities")
+            _LOGGER.info("QModem/modem_ctrl became available, creating qmodem sensor entities")
             
             # Get entity registry to check for existing entities
             entity_registry = er.async_get(self.hass)
@@ -337,10 +358,39 @@ class QModemCoordinator(DataUpdateCoordinator):
             
             self.qmodem_entities_created = True
 
-        # QModem became unavailable - entities will show as unavailable through their available property
+        # QModem became unavailable - remove entities
         elif not qmodem_available and self.qmodem_entities_created:
-            _LOGGER.info("QModem became unavailable, qmodem sensor entities will show as unavailable")
-            # Note: Entities will automatically show as unavailable through their available property
+            _LOGGER.info("QModem/modem_ctrl became unavailable, removing qmodem sensor entities")
+            
+            # Get entity registry to remove entities
+            entity_registry = er.async_get(self.hass)
+            
+            qmodem_sensors = [
+                desc for desc in SENSOR_DESCRIPTIONS 
+                if desc.key.startswith("qmodem_")
+            ]
+            
+            removed_count = 0
+            for description in qmodem_sensors:
+                key_without_prefix = description.key.replace("qmodem_", "")
+                unique_id = f"{self.host}_qmodem_{key_without_prefix}"
+                existing_entity_id = entity_registry.async_get_entity_id(
+                    "sensor", DOMAIN, unique_id
+                )
+                
+                if existing_entity_id:
+                    entity_registry.async_remove(existing_entity_id)
+                    removed_count += 1
+                    _LOGGER.debug("Removed qmodem sensor entity: %s", existing_entity_id)
+            
+            # Clear tracked entities
+            self.qmodem_entities.clear()
+            self.qmodem_entities_created = False
+            
+            if removed_count > 0:
+                _LOGGER.info("Removed %d qmodem sensor entities", removed_count)
+            else:
+                _LOGGER.debug("No qmodem sensor entities to remove")
 
     def _process_qmodem_info(self, qmodem_info: dict[str, Any]) -> dict[str, Any]:
         """Process QModem information and extract relevant sensors."""
@@ -498,14 +548,16 @@ class QModemSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if coordinator is available and sensor data is valid."""
+        """Return True if coordinator is available and qmodem/modem_ctrl is accessible."""
         if not self.coordinator.last_update_success:
             return False
         
+        # Check if modem_ctrl is available from the current data update
+        # We consider it available if we have any qmodem data
         if not self.coordinator.data:
             return False
             
-        # QModem sensor is available if it has a value (not None)
+        # QModem sensor is available if coordinator has data and this sensor has a value
         return self.coordinator.data.get(self.entity_description.key) is not None
 
     @property

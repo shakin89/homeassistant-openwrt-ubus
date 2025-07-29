@@ -77,6 +77,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if session_id is None:
             raise ConfigEntryNotReady(f"Failed to connect to OpenWrt device at {entry.data[CONF_HOST]}")
 
+        # Check for modem_ctrl availability and store the result
+        modem_ctrl_available = False
+        try:
+            modem_ctrl_list = await ubus.list_modem_ctrl()
+            modem_ctrl_available = modem_ctrl_list is not None and bool(modem_ctrl_list)
+            _LOGGER.debug("Modem_ctrl availability check: %s", modem_ctrl_available)
+        except Exception as exc:
+            _LOGGER.debug("Modem_ctrl not available: %s", exc)
+            modem_ctrl_available = False
+
+        # Store modem_ctrl availability in hass data
+        hass.data[DOMAIN]["modem_ctrl_available"] = modem_ctrl_available
+
     except Exception as exc:
         raise ConfigEntryNotReady(f"Failed to connect to OpenWrt device at {entry.data[CONF_HOST]}: {exc}") from exc
 
@@ -106,6 +119,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Clear the coordinators list
             hass.data[DOMAIN]["coordinators"] = []
         
+        # Clean up entry-specific data
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        
+        # Clean up modem_ctrl availability data if no more entries
+        if len([e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != entry.entry_id]) == 0:
+            hass.data[DOMAIN].pop("modem_ctrl_available", None)
 
     return unload_ok
