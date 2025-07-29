@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import timedelta
 import logging
 import re
+import time
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -124,6 +125,22 @@ SENSOR_DESCRIPTIONS = [
         state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfInformation.MEGABYTES,
         icon="mdi:upload",
+        entity_category=None,
+    ),
+    SensorEntityDescription(
+        key="tx_speed",
+        name="TX Speed",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="Mbps",
+        icon="mdi:upload",
+        entity_category=None,
+    ),
+    SensorEntityDescription(
+        key="rx_speed",
+        name="RX Speed",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="Mbps",
+        icon="mdi:download",
         entity_category=None,
     ),
 ]
@@ -252,9 +269,12 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
         self._host = coordinator.data_manager.entry.data[CONF_HOST]
         # Use sensor-specific unique ID pattern to avoid collision with device tracker
         self._attr_unique_id = f"{self._host}_sensor_{mac_address}_{description.key}"
-
-        # Don't modify device name - use original MAC address format
-        self._attr_name = None  # Let Home Assistant generate the name
+        self._attr_has_entity_name = True
+        
+        # Store previous data for speed calculations
+        self._previous_rx_bytes = None
+        self._previous_tx_bytes = None
+        self._previous_update_time = None
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -290,6 +310,7 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
 
         device_data = device_stats[self.mac_address]
         key = self.entity_description.key
+        current_time = time.time()
 
         try:
             if key == "signal":
@@ -326,6 +347,67 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
                 bytes_value = tx_data.get("bytes")
                 # Convert bytes to megabytes
                 return round(bytes_value / (1024 * 1024), 2) if bytes_value else None
+            if key == "rx_speed":
+                rx_data = device_data.get("rx", {})
+                current_rx_bytes = rx_data.get("bytes")
+                
+                if current_rx_bytes is None:
+                    return None
+                
+                # Calculate speed based on previous data
+                if (self._previous_rx_bytes is not None and 
+                    self._previous_update_time is not None and 
+                    current_time > self._previous_update_time):
+                    
+                    time_diff = current_time - self._previous_update_time
+                    byte_diff = current_rx_bytes - self._previous_rx_bytes
+                    
+                    if time_diff > 0 and byte_diff >= 0:
+                        # Convert bytes/second to Mbps (1 byte/s = 8 bits/s, 1 Mbps = 1,000,000 bits/s)
+                        speed_mbps = (byte_diff * 8) / (time_diff * 1_000_000)
+                        speed_mbps = round(speed_mbps, 3)
+                    else:
+                        speed_mbps = 0
+                else:
+                    speed_mbps = 0
+                
+                # Update previous values for next calculation
+                self._previous_rx_bytes = current_rx_bytes
+                self._previous_update_time = current_time
+                
+                return speed_mbps
+                
+            if key == "tx_speed":
+                tx_data = device_data.get("tx", {})
+                current_tx_bytes = tx_data.get("bytes")
+                
+                if current_tx_bytes is None:
+                    return None
+                
+                # Calculate speed based on previous data
+                if (self._previous_tx_bytes is not None and 
+                    self._previous_update_time is not None and 
+                    current_time > self._previous_update_time):
+                    
+                    time_diff = current_time - self._previous_update_time
+                    byte_diff = current_tx_bytes - self._previous_tx_bytes
+                    
+                    if time_diff > 0 and byte_diff >= 0:
+                        # Convert bytes/second to Mbps (1 byte/s = 8 bits/s, 1 Mbps = 1,000,000 bits/s)
+                        speed_mbps = (byte_diff * 8) / (time_diff * 1_000_000)
+                        speed_mbps = round(speed_mbps, 3)
+                    else:
+                        speed_mbps = 0
+                else:
+                    speed_mbps = 0
+                
+                # Update previous values for next calculation
+                self._previous_tx_bytes = current_tx_bytes
+                # Update time only if it hasn't been updated in this cycle
+                if self._previous_update_time != current_time:
+                    self._previous_update_time = current_time
+                
+                return speed_mbps
 
         except (KeyError, TypeError, ValueError) as exc:
             _LOGGER.debug("Error getting %s for %s: %s", key, self.mac_address, exc)

@@ -73,7 +73,7 @@ SENSOR_DESCRIPTIONS = [
     SensorEntityDescription(
         key="qmodem_connect_status",
         name="Modem Connect Status",
-        icon="mdi:connection",
+        icon="mdi:cellphone-wireless",
         entity_category=None,
     ),
     # QModem SIM Information sensors
@@ -86,7 +86,7 @@ SENSOR_DESCRIPTIONS = [
     SensorEntityDescription(
         key="qmodem_isp",
         name="Internet Service Provider",
-        icon="mdi:web",
+        icon="mdi:network-outline",
         entity_category=None,
     ),
     SensorEntityDescription(
