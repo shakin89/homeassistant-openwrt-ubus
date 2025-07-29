@@ -94,6 +94,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
+        # Clean up coordinators
+        if DOMAIN in hass.data and "coordinators" in hass.data[DOMAIN]:
+            coordinators = hass.data[DOMAIN]["coordinators"]
+            for coordinator in coordinators:
+                if hasattr(coordinator, 'async_shutdown'):
+                    try:
+                        await coordinator.async_shutdown()
+                    except Exception as exc:
+                        _LOGGER.debug("Error shutting down coordinator: %s", exc)
+            # Clear the coordinators list
+            hass.data[DOMAIN]["coordinators"] = []
+        
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
     return unload_ok

@@ -45,18 +45,21 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
+    url = f"http://{data[CONF_HOST]}/ubus"
+    ubus = Ubus(url, data[CONF_USERNAME], data[CONF_PASSWORD])
+    
     try:
-        url = f"http://{data[CONF_HOST]}/ubus"
-        ubus = Ubus(url, data[CONF_USERNAME], data[CONF_PASSWORD])
-
         # Test connection
-        session_id = await hass.async_add_executor_job(ubus.connect)
+        session_id = await ubus.connect()
         if session_id is None:
             raise CannotConnect("Failed to connect to OpenWrt device")
 
     except Exception as exc:
         _LOGGER.exception("Unexpected exception during connection test")
         raise CannotConnect("Failed to connect to OpenWrt device") from exc
+    finally:
+        # Always close the session to prevent leaks
+        await ubus.close()
 
     # Return info that you want to store in the config entry.
     return {"title": f"OpenWrt ubs {data[CONF_HOST]}"}
