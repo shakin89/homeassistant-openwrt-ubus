@@ -268,14 +268,6 @@ class ExtendedUbus(Ubus):
         if not results:
             return {}
         
-        # Check first result for permission error to handle batch-level permissions
-        if results and isinstance(results, list) and len(results) > 0:
-            first_result = results[0]
-            if "error" in first_result:
-                error_msg = first_result["error"].get("message", "")
-                if "Access denied" in error_msg:
-                    raise PermissionError(error_msg)
-        
         # Process results
         ap_info_data = {}
         for i, result in enumerate(results):

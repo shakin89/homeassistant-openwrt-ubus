@@ -127,6 +127,13 @@ class Ubus:
 
         # For batch calls, the response is typically an array of responses
         if isinstance(json_response, list):
+            # Check first result for permission error to handle batch-level permissions
+            if json_response and len(json_response) > 0:
+                first_result = json_response[0]
+                if "error" in first_result:
+                    error_msg = first_result["error"].get("message", "")
+                    if "Access denied" in error_msg:
+                        raise PermissionError(error_msg)
             return json_response
         
         # Handle single response format (fallback)
