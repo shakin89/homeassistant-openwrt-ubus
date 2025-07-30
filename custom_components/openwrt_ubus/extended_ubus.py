@@ -104,6 +104,10 @@ class ExtendedUbus(Ubus):
         """Get detailed station statistics for all connected devices."""
         return await self.api_call(API_RPC_CALL, API_SUBSYS_IWINFO, API_METHOD_GET_STA, {"device": ap_device})
 
+    async def get_ap_info(self, ap_device):
+        """Get detailed access point information."""
+        return await self.api_call(API_RPC_CALL, API_SUBSYS_IWINFO, API_METHOD_INFO, {"device": ap_device})
+
     def parse_sta_devices(self, result):
         """Parse station devices from the ubus result."""
         sta_devices = []
@@ -131,6 +135,25 @@ class ExtendedUbus(Ubus):
     def parse_ap_devices(self, result):
         """Parse access point devices from the ubus result."""
         return list(result.get("devices", []))
+
+    def parse_ap_info(self, result, ap_device):
+        """Parse access point information from the ubus result."""
+        if not result:
+            return {}
+        
+        # The result should contain the AP information directly
+        ap_info = dict(result)
+        ap_info["device"] = ap_device  # Add device name for identification
+        
+        # Set device name based on SSID and mode
+        if "ssid" in ap_info and "mode" in ap_info:
+            ssid = ap_info["ssid"]
+            mode = ap_info["mode"].lower() if ap_info["mode"] else "unknown"
+            ap_info["device_name"] = f"{ssid}({mode})"
+        else:
+            ap_info["device_name"] = ap_device
+            
+        return ap_info
 
     # hostapd specific methods
     def parse_hostapd_sta_devices(self, result):
@@ -222,3 +245,61 @@ class ExtendedUbus(Ubus):
                     _LOGGER.debug("Error parsing sta data for %s: %s", ap_device, exc)
                     
         return sta_data
+
+    async def get_all_ap_info_batch(self, ap_devices):
+        """Get AP info for all AP devices using batch call."""
+        if not ap_devices:
+            return {}
+        
+        # Build API calls for all AP devices
+        rpcs = []
+        for i, ap_device in enumerate(ap_devices):
+            api_call = json.loads(self.build_api(
+                API_RPC_CALL,
+                API_SUBSYS_IWINFO,
+                API_METHOD_INFO,
+                {"device": ap_device}
+            ))
+            api_call["id"] = i  # Use index as ID to match responses
+            rpcs.append(api_call)
+        
+        # Execute batch call
+        results = await self.batch_call(rpcs)
+        if not results:
+            return {}
+        
+        # Check first result for permission error to handle batch-level permissions
+        if results and isinstance(results, list) and len(results) > 0:
+            first_result = results[0]
+            if "error" in first_result:
+                error_msg = first_result["error"].get("message", "")
+                if "Access denied" in error_msg:
+                    raise PermissionError(error_msg)
+        
+        # Process results
+        ap_info_data = {}
+        for i, result in enumerate(results):
+            if i < len(ap_devices):
+                ap_device = ap_devices[i]
+                try:
+                    # Handle different response formats
+                    if "result" in result:
+                        ap_result = result["result"][1] if len(result["result"]) > 1 else None
+                    elif "error" in result:
+                        _LOGGER.debug("Error in batch call for AP %s: %s", ap_device, result["error"])
+                        continue
+                    else:
+                        continue
+                        
+                    if ap_result:
+                        ap_info = self.parse_ap_info(ap_result, ap_device)
+                        # Only add AP if it has an SSID
+                        if ap_info and ap_info.get("ssid"):
+                            ap_info_data[ap_device] = ap_info
+                            _LOGGER.debug("AP info fetched for device %s with SSID %s", ap_device, ap_info.get("ssid"))
+                        else:
+                            _LOGGER.debug("Skipping AP device %s - no SSID found", ap_device)
+                except (IndexError, KeyError) as exc:
+                    _LOGGER.debug("Error parsing AP info for %s: %s", ap_device, exc)
+                    
+        return ap_info_data

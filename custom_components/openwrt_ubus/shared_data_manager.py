@@ -21,12 +21,14 @@ from .const import (
     CONF_SYSTEM_SENSOR_TIMEOUT,
     CONF_QMODEM_SENSOR_TIMEOUT,
     CONF_STA_SENSOR_TIMEOUT,
+    CONF_AP_SENSOR_TIMEOUT,
     DOMAIN, 
     DEFAULT_DHCP_SOFTWARE, 
     DEFAULT_WIRELESS_SOFTWARE,
     DEFAULT_SYSTEM_SENSOR_TIMEOUT,
     DEFAULT_QMODEM_SENSOR_TIMEOUT,
     DEFAULT_STA_SENSOR_TIMEOUT,
+    DEFAULT_AP_SENSOR_TIMEOUT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -105,6 +107,10 @@ class SharedUbusDataManager:
             CONF_STA_SENSOR_TIMEOUT,
             entry.data.get(CONF_STA_SENSOR_TIMEOUT, DEFAULT_STA_SENSOR_TIMEOUT)
         )
+        ap_timeout = entry.options.get(
+            CONF_AP_SENSOR_TIMEOUT,
+            entry.data.get(CONF_AP_SENSOR_TIMEOUT, DEFAULT_AP_SENSOR_TIMEOUT)
+        )
         
         self._update_intervals: Dict[str, timedelta] = {
             "system_info": timedelta(seconds=system_timeout),
@@ -114,6 +120,7 @@ class SharedUbusDataManager:
             "dhcp_leases": timedelta(seconds=sta_timeout),
             "hostapd_clients": timedelta(seconds=sta_timeout),
             "iwinfo_stations": timedelta(seconds=sta_timeout),
+            "ap_info": timedelta(seconds=ap_timeout),
         }
         self._update_locks: Dict[str, asyncio.Lock] = {
             key: asyncio.Lock() for key in self._update_intervals
@@ -189,6 +196,24 @@ class SharedUbusDataManager:
         except Exception as exc:
             _LOGGER.debug("Error fetching QModem info: %s", exc)
             return {"qmodem_info": None}
+
+    @ubus_auto_reconnect(max_retries=1)
+    async def _fetch_ap_info(self) -> Dict[str, Any]:
+        """Fetch access point information."""
+        client = await self._get_ubus_client("ap")
+        try:
+            # First get list of AP devices
+            ap_devices_result = await client.get_ap_devices()
+            ap_devices = client.parse_ap_devices(ap_devices_result)
+            
+            # Use batch API to get AP info for all devices
+            ap_info_data = await client.get_all_ap_info_batch(ap_devices)
+            
+            _LOGGER.debug("AP info data fetched successfully: %d devices", len(ap_info_data))
+            return {"ap_info": ap_info_data}
+        except Exception as exc:
+            _LOGGER.debug("Error fetching AP info: %s", exc)
+            return {"ap_info": {}}
 
     @ubus_auto_reconnect(max_retries=1)
     async def _fetch_device_statistics(self) -> Dict[str, Any]:
@@ -383,6 +408,8 @@ class SharedUbusDataManager:
                     data = await self._fetch_qmodem_info()
                 elif data_type == "device_statistics":
                     data = await self._fetch_device_statistics()
+                elif data_type == "ap_info":
+                    data = await self._fetch_ap_info()
                 else:
                     raise ValueError(f"Unknown data type: {data_type}")
 

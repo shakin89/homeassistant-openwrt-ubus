@@ -13,11 +13,13 @@ from .const import (
     CONF_ENABLE_QMODEM_SENSORS,
     CONF_ENABLE_STA_SENSORS,
     CONF_ENABLE_SYSTEM_SENSORS,
+    CONF_ENABLE_AP_SENSORS,
     DEFAULT_ENABLE_QMODEM_SENSORS,
     DEFAULT_ENABLE_STA_SENSORS,
     DEFAULT_ENABLE_SYSTEM_SENSORS,
+    DEFAULT_ENABLE_AP_SENSORS,
 )
-from .sensors import system_sensor, qmodem_sensor, sta_sensor
+from .sensors import system_sensor, qmodem_sensor, sta_sensor, ap_sensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +42,12 @@ SENSOR_MODULES = [
         "config_key": CONF_ENABLE_STA_SENSORS,
         "default": DEFAULT_ENABLE_STA_SENSORS,
         "name": "sta_sensor"
+    },
+    {
+        "module": ap_sensor,
+        "config_key": CONF_ENABLE_AP_SENSORS,
+        "default": DEFAULT_ENABLE_AP_SENSORS,
+        "name": "ap_sensor"
     },
 ]
 

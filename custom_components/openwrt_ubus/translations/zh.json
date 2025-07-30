@@ -18,7 +18,8 @@
         "data": {
           "enable_system_sensors": "启用系统传感器",
           "enable_qmodem_sensors": "启用调制解调器传感器",
-          "enable_sta_sensors": "启用站点（WiFi设备）传感器"
+          "enable_sta_sensors": "启用站点（WiFi设备）传感器",
+          "enable_ap_sensors": "启用接入点传感器"
         }
       },
       "timeouts": {
@@ -27,7 +28,8 @@
         "data": {
           "system_sensor_timeout": "系统传感器更新间隔（秒）",
           "qmodem_sensor_timeout": "调制解调器传感器更新间隔（秒）",
-          "sta_sensor_timeout": "站点传感器更新间隔（秒）"
+          "sta_sensor_timeout": "站点传感器更新间隔（秒）",
+          "ap_sensor_timeout": "接入点传感器更新间隔（秒）"
         }
       }
     },
@@ -51,9 +53,11 @@
           "enable_system_sensors": "启用系统传感器",
           "enable_qmodem_sensors": "启用调制解调器传感器",
           "enable_sta_sensors": "启用站点（WiFi设备）传感器",
+          "enable_ap_sensors": "启用接入点传感器",
           "system_sensor_timeout": "系统传感器更新间隔（秒）",
           "qmodem_sensor_timeout": "调制解调器传感器更新间隔（秒）",
-          "sta_sensor_timeout": "站点传感器更新间隔（秒）"
+          "sta_sensor_timeout": "站点传感器更新间隔（秒）",
+          "ap_sensor_timeout": "接入点传感器更新间隔（秒）"
         }
       },
       "sensors": {
@@ -63,6 +67,7 @@
           "enable_system_sensors": "启用系统传感器",
           "enable_qmodem_sensors": "启用调制解调器传感器",
           "enable_sta_sensors": "启用站点（WiFi设备）传感器",
+          "enable_ap_sensors": "启用接入点传感器",
           "wireless_software": "无线软件",
           "dhcp_software": "DHCP 软件"
         }
@@ -73,7 +78,8 @@
         "data": {
           "system_sensor_timeout": "系统传感器更新间隔（秒）",
           "qmodem_sensor_timeout": "调制解调器传感器更新间隔（秒）",
-          "sta_sensor_timeout": "站点传感器更新间隔（秒）"
+          "sta_sensor_timeout": "站点传感器更新间隔（秒）",
+          "ap_sensor_timeout": "接入点传感器更新间隔（秒）"
         }
       }
     }
@@ -211,6 +217,39 @@
       },
       "tx_bytes": {
         "name": "发送数据"
+      },
+      "ssid": {
+        "name": "网络名称 (SSID)"
+      },
+      "bssid": {
+        "name": "BSSID"
+      },
+      "channel": {
+        "name": "信道"
+      },
+      "frequency": {
+        "name": "频率"
+      },
+      "txpower": {
+        "name": "发射功率"
+      },
+      "quality": {
+        "name": "信号质量"
+      },
+      "bitrate": {
+        "name": "比特率"
+      },
+      "mode": {
+        "name": "模式"
+      },
+      "hwmode": {
+        "name": "硬件模式"
+      },
+      "htmode": {
+        "name": "HT 模式"
+      },
+      "country": {
+        "name": "国家"
       }
     }
   },

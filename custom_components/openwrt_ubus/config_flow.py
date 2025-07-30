@@ -19,17 +19,21 @@ from .const import (
     CONF_ENABLE_QMODEM_SENSORS,
     CONF_ENABLE_STA_SENSORS,
     CONF_ENABLE_SYSTEM_SENSORS,
+    CONF_ENABLE_AP_SENSORS,
     CONF_SYSTEM_SENSOR_TIMEOUT,
     CONF_QMODEM_SENSOR_TIMEOUT,
     CONF_STA_SENSOR_TIMEOUT,
+    CONF_AP_SENSOR_TIMEOUT,
     DEFAULT_DHCP_SOFTWARE,
     DEFAULT_WIRELESS_SOFTWARE,
     DEFAULT_ENABLE_QMODEM_SENSORS,
     DEFAULT_ENABLE_STA_SENSORS,
     DEFAULT_ENABLE_SYSTEM_SENSORS,
+    DEFAULT_ENABLE_AP_SENSORS,
     DEFAULT_SYSTEM_SENSOR_TIMEOUT,
     DEFAULT_QMODEM_SENSOR_TIMEOUT,
     DEFAULT_STA_SENSOR_TIMEOUT,
+    DEFAULT_AP_SENSOR_TIMEOUT,
     DHCP_SOFTWARES,
     DOMAIN,
     WIRELESS_SOFTWARES,
@@ -59,6 +63,7 @@ STEP_SENSORS_DATA_SCHEMA = vol.Schema(
         vol.Optional(CONF_ENABLE_SYSTEM_SENSORS, default=DEFAULT_ENABLE_SYSTEM_SENSORS): bool,
         vol.Optional(CONF_ENABLE_QMODEM_SENSORS, default=DEFAULT_ENABLE_QMODEM_SENSORS): bool,
         vol.Optional(CONF_ENABLE_STA_SENSORS, default=DEFAULT_ENABLE_STA_SENSORS): bool,
+        vol.Optional(CONF_ENABLE_AP_SENSORS, default=DEFAULT_ENABLE_AP_SENSORS): bool,
     }
 )
 
@@ -73,6 +78,9 @@ STEP_TIMEOUTS_DATA_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_STA_SENSOR_TIMEOUT, default=DEFAULT_STA_SENSOR_TIMEOUT): vol.All(
             vol.Coerce(int), vol.Range(min=10, max=300)
+        ),
+        vol.Optional(CONF_AP_SENSOR_TIMEOUT, default=DEFAULT_AP_SENSOR_TIMEOUT): vol.All(
+            vol.Coerce(int), vol.Range(min=30, max=600)
         ),
     }
 )
@@ -241,6 +249,10 @@ class OpenwrtUbusOptionsFlow(OptionsFlow):
                     default=current_data.get(CONF_ENABLE_STA_SENSORS, DEFAULT_ENABLE_STA_SENSORS)
                 ): bool,
                 vol.Optional(
+                    CONF_ENABLE_AP_SENSORS,
+                    default=current_data.get(CONF_ENABLE_AP_SENSORS, DEFAULT_ENABLE_AP_SENSORS)
+                ): bool,
+                vol.Optional(
                     CONF_SYSTEM_SENSOR_TIMEOUT,
                     default=current_data.get(CONF_SYSTEM_SENSOR_TIMEOUT, DEFAULT_SYSTEM_SENSOR_TIMEOUT)
                 ): vol.All(vol.Coerce(int), vol.Range(min=10, max=300)),
@@ -252,6 +264,10 @@ class OpenwrtUbusOptionsFlow(OptionsFlow):
                     CONF_STA_SENSOR_TIMEOUT,
                     default=current_data.get(CONF_STA_SENSOR_TIMEOUT, DEFAULT_STA_SENSOR_TIMEOUT)
                 ): vol.All(vol.Coerce(int), vol.Range(min=10, max=300)),
+                vol.Optional(
+                    CONF_AP_SENSOR_TIMEOUT,
+                    default=current_data.get(CONF_AP_SENSOR_TIMEOUT, DEFAULT_AP_SENSOR_TIMEOUT)
+                ): vol.All(vol.Coerce(int), vol.Range(min=30, max=600)),
             }
         )
 

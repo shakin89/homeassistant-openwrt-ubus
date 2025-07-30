@@ -21,11 +21,13 @@ from .const import (
     CONF_ENABLE_QMODEM_SENSORS,
     CONF_ENABLE_STA_SENSORS,
     CONF_ENABLE_SYSTEM_SENSORS,
+    CONF_ENABLE_AP_SENSORS,
     DEFAULT_DHCP_SOFTWARE,
     DEFAULT_WIRELESS_SOFTWARE,
     DEFAULT_ENABLE_QMODEM_SENSORS,
     DEFAULT_ENABLE_STA_SENSORS,
     DEFAULT_ENABLE_SYSTEM_SENSORS,
+    DEFAULT_ENABLE_AP_SENSORS,
     DHCP_SOFTWARES,
     DOMAIN,
     PLATFORMS,
@@ -145,8 +147,14 @@ async def _cleanup_disabled_sensor_devices(hass: HomeAssistant, entry: ConfigEnt
         entry.data.get(CONF_ENABLE_STA_SENSORS, DEFAULT_ENABLE_STA_SENSORS)
     )
     
-    _LOGGER.debug("Sensor states - System: %s, QModem: %s, STA: %s", 
-                  system_enabled, qmodem_enabled, sta_enabled)
+    # Check if AP sensors are disabled
+    ap_enabled = entry.options.get(
+        CONF_ENABLE_AP_SENSORS,
+        entry.data.get(CONF_ENABLE_AP_SENSORS, DEFAULT_ENABLE_AP_SENSORS)
+    )
+    
+    _LOGGER.debug("Sensor states - System: %s, QModem: %s, STA: %s, AP: %s", 
+                  system_enabled, qmodem_enabled, sta_enabled, ap_enabled)
     
     # List all current devices for debugging
     all_devices = [device for device in device_registry.devices.values() 
@@ -190,13 +198,30 @@ async def _cleanup_disabled_sensor_devices(hass: HomeAssistant, entry: ConfigEnt
                     if via_device and (DOMAIN, host) in via_device.identifiers:
                         # This device is connected via the main router, check if it's a STA device
                         for identifier in device.identifiers:
-                            if identifier[0] == DOMAIN and identifier[1] != host and identifier[1] != f"{host}_qmodem":
-                                # This is a STA device (not the main router or QModem device)
+                            if (identifier[0] == DOMAIN and identifier[1] != host and 
+                                identifier[1] != f"{host}_qmodem" and 
+                                not identifier[1].startswith(f"{host}_ap_")):
+                                # This is a STA device (not the main router, QModem, or AP device)
                                 _LOGGER.info("Removing STA device %s (STA sensors disabled)", identifier[1])
                                 device_registry.async_remove_device(device.id)
                                 removed_count += 1
                                 break
             _LOGGER.debug("Removed %d STA devices", removed_count)
+        
+        # If AP sensors are disabled, remove all AP devices
+        if not ap_enabled:
+            removed_count = 0
+            # Find all AP devices (devices with identifiers starting with host_ap_)
+            for device in list(device_registry.devices.values()):  # Use list() to avoid modification during iteration
+                for identifier in device.identifiers:
+                    if (identifier[0] == DOMAIN and 
+                        identifier[1].startswith(f"{host}_ap_")):
+                        # This is an AP device
+                        _LOGGER.info("Removing AP device %s (AP sensors disabled)", identifier[1])
+                        device_registry.async_remove_device(device.id)
+                        removed_count += 1
+                        break
+            _LOGGER.debug("Removed %d AP devices", removed_count)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
