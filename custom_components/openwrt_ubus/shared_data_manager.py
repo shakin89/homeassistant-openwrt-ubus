@@ -18,9 +18,15 @@ from .extended_ubus import ExtendedUbus
 from .const import (
     CONF_DHCP_SOFTWARE, 
     CONF_WIRELESS_SOFTWARE, 
+    CONF_SYSTEM_SENSOR_TIMEOUT,
+    CONF_QMODEM_SENSOR_TIMEOUT,
+    CONF_STA_SENSOR_TIMEOUT,
     DOMAIN, 
     DEFAULT_DHCP_SOFTWARE, 
     DEFAULT_WIRELESS_SOFTWARE,
+    DEFAULT_SYSTEM_SENSOR_TIMEOUT,
+    DEFAULT_QMODEM_SENSOR_TIMEOUT,
+    DEFAULT_STA_SENSOR_TIMEOUT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -85,14 +91,29 @@ class SharedUbusDataManager:
         self.entry = entry
         self._data_cache: Dict[str, Dict[str, Any]] = {}
         self._last_update: Dict[str, datetime] = {}
+        
+        # Get timeout values from configuration (priority: options > data > default)
+        system_timeout = entry.options.get(
+            CONF_SYSTEM_SENSOR_TIMEOUT,
+            entry.data.get(CONF_SYSTEM_SENSOR_TIMEOUT, DEFAULT_SYSTEM_SENSOR_TIMEOUT)
+        )
+        qmodem_timeout = entry.options.get(
+            CONF_QMODEM_SENSOR_TIMEOUT,
+            entry.data.get(CONF_QMODEM_SENSOR_TIMEOUT, DEFAULT_QMODEM_SENSOR_TIMEOUT)
+        )
+        sta_timeout = entry.options.get(
+            CONF_STA_SENSOR_TIMEOUT,
+            entry.data.get(CONF_STA_SENSOR_TIMEOUT, DEFAULT_STA_SENSOR_TIMEOUT)
+        )
+        
         self._update_intervals: Dict[str, timedelta] = {
-            "system_info": timedelta(minutes=2),
-            "system_board": timedelta(minutes=5),
-            "qmodem_info": timedelta(minutes=1),
-            "device_statistics": timedelta(seconds=30),
-            "dhcp_leases": timedelta(seconds=30),
-            "hostapd_clients": timedelta(seconds=30),
-            "iwinfo_stations": timedelta(seconds=30),
+            "system_info": timedelta(seconds=system_timeout),
+            "system_board": timedelta(seconds=system_timeout * 2),  # Board info changes less frequently
+            "qmodem_info": timedelta(seconds=qmodem_timeout),
+            "device_statistics": timedelta(seconds=sta_timeout),
+            "dhcp_leases": timedelta(seconds=sta_timeout),
+            "hostapd_clients": timedelta(seconds=sta_timeout),
+            "iwinfo_stations": timedelta(seconds=sta_timeout),
         }
         self._update_locks: Dict[str, asyncio.Lock] = {
             key: asyncio.Lock() for key in self._update_intervals
@@ -160,28 +181,13 @@ class SharedUbusDataManager:
     @ubus_auto_reconnect(max_retries=1)
     async def _fetch_qmodem_info(self) -> Dict[str, Any]:
         """Fetch QModem information if available."""
-        # First check if we previously determined modem_ctrl is unavailable
-        previously_unavailable = not self.hass.data[DOMAIN].get("modem_ctrl_available", False)
-        
         client = await self._get_ubus_client("qmodem")
         try:
             qmodem_info = await client.get_qmodem_info()
             _LOGGER.debug("QModem data fetched successfully")
-            
-            # If we successfully got data and it was previously unavailable, update the flag
-            if previously_unavailable:
-                self.hass.data[DOMAIN]["modem_ctrl_available"] = True
-                _LOGGER.info("QModem/modem_ctrl is now available - updating status")
-            
             return {"qmodem_info": qmodem_info}
         except Exception as exc:
             _LOGGER.debug("Error fetching QModem info: %s", exc)
-            
-            # If this fails, we should periodically retry to check if modem_ctrl becomes available
-            # Don't immediately mark as unavailable, keep trying
-            if not previously_unavailable:
-                _LOGGER.warning("QModem/modem_ctrl temporarily unavailable, will keep retrying")
-            
             return {"qmodem_info": None}
 
     @ubus_auto_reconnect(max_retries=1)

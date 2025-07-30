@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "OpenWrt ubus",
+        "title": "OpenWrt ubus - 连接配置",
         "description": "配置连接到 OpenWrt 设备，使用 ubus 进行无线设备跟踪和系统监控",
         "data": {
           "host": "主机地址",
@@ -10,6 +10,24 @@
           "password": "密码",
           "wireless_software": "无线软件",
           "dhcp_software": "DHCP 软件"
+        }
+      },
+      "sensors": {
+        "title": "OpenWrt ubus - 传感器配置",
+        "description": "选择要为 {host} 启用的传感器类型",
+        "data": {
+          "enable_system_sensors": "启用系统传感器",
+          "enable_qmodem_sensors": "启用调制解调器传感器",
+          "enable_sta_sensors": "启用站点（WiFi设备）传感器"
+        }
+      },
+      "timeouts": {
+        "title": "OpenWrt ubus - 超时配置",
+        "description": "配置 {host} 上传感器的更新间隔",
+        "data": {
+          "system_sensor_timeout": "系统传感器更新间隔（秒）",
+          "qmodem_sensor_timeout": "调制解调器传感器更新间隔（秒）",
+          "sta_sensor_timeout": "站点传感器更新间隔（秒）"
         }
       }
     },
@@ -20,6 +38,44 @@
     },
     "abort": {
       "already_configured": "设备已配置"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "OpenWrt ubus 配置",
+        "description": "配置 {host} 的传感器、超时时间和软件设置",
+        "data": {
+          "wireless_software": "无线软件",
+          "dhcp_software": "DHCP 软件",
+          "enable_system_sensors": "启用系统传感器",
+          "enable_qmodem_sensors": "启用调制解调器传感器",
+          "enable_sta_sensors": "启用站点（WiFi设备）传感器",
+          "system_sensor_timeout": "系统传感器更新间隔（秒）",
+          "qmodem_sensor_timeout": "调制解调器传感器更新间隔（秒）",
+          "sta_sensor_timeout": "站点传感器更新间隔（秒）"
+        }
+      },
+      "sensors": {
+        "title": "传感器配置",
+        "description": "配置 {host} 的传感器类型和软件设置",
+        "data": {
+          "enable_system_sensors": "启用系统传感器",
+          "enable_qmodem_sensors": "启用调制解调器传感器",
+          "enable_sta_sensors": "启用站点（WiFi设备）传感器",
+          "wireless_software": "无线软件",
+          "dhcp_software": "DHCP 软件"
+        }
+      },
+      "timeouts": {
+        "title": "超时配置",
+        "description": "配置 {host} 上传感器的更新间隔",
+        "data": {
+          "system_sensor_timeout": "系统传感器更新间隔（秒）",
+          "qmodem_sensor_timeout": "调制解调器传感器更新间隔（秒）",
+          "sta_sensor_timeout": "站点传感器更新间隔（秒）"
+        }
+      }
     }
   },
   "entity": {

@@ -13,6 +13,24 @@ DEFAULT_WIRELESS_SOFTWARE = "iwinfo"
 DHCP_SOFTWARES = ["dnsmasq", "odhcpd", "none"]
 WIRELESS_SOFTWARES = ["hostapd", "iwinfo"]
 
+# Sensor enable/disable configuration
+CONF_ENABLE_QMODEM_SENSORS = "enable_qmodem_sensors"
+CONF_ENABLE_STA_SENSORS = "enable_sta_sensors"
+CONF_ENABLE_SYSTEM_SENSORS = "enable_system_sensors"
+
+# Timeout configuration
+CONF_SYSTEM_SENSOR_TIMEOUT = "system_sensor_timeout"
+CONF_QMODEM_SENSOR_TIMEOUT = "qmodem_sensor_timeout"
+CONF_STA_SENSOR_TIMEOUT = "sta_sensor_timeout"
+
+# Default values
+DEFAULT_ENABLE_QMODEM_SENSORS = True
+DEFAULT_ENABLE_STA_SENSORS = True
+DEFAULT_ENABLE_SYSTEM_SENSORS = True
+DEFAULT_SYSTEM_SENSOR_TIMEOUT = 30
+DEFAULT_QMODEM_SENSOR_TIMEOUT = 120
+DEFAULT_STA_SENSOR_TIMEOUT = 30
+
 # API constants - moved from Ubus/const.py
 API_RPC_CALL = "call"
 API_RPC_LIST = "list"

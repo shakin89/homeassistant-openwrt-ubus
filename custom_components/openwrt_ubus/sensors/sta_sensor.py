@@ -34,7 +34,9 @@ from homeassistant.helpers.update_coordinator import (
 from ..const import (
     DOMAIN,
     CONF_WIRELESS_SOFTWARE,
+    CONF_STA_SENSOR_TIMEOUT,
     DEFAULT_WIRELESS_SOFTWARE,
+    DEFAULT_STA_SENSOR_TIMEOUT,
 )
 from ..shared_data_manager import SharedDataUpdateCoordinator
 
@@ -157,13 +159,20 @@ async def async_setup_entry(
     data_manager_key = f"data_manager_{entry.entry_id}"
     data_manager = hass.data[DOMAIN][data_manager_key]
     
+    # Get timeout from configuration (priority: options > data > default)
+    timeout = entry.options.get(
+        CONF_STA_SENSOR_TIMEOUT,
+        entry.data.get(CONF_STA_SENSOR_TIMEOUT, DEFAULT_STA_SENSOR_TIMEOUT)
+    )
+    scan_interval = timedelta(seconds=timeout)
+    
     # Create coordinator using shared data manager
     coordinator = SharedDataUpdateCoordinator(
         hass,
         data_manager,
         ["device_statistics"],  # Data types this coordinator needs
         f"{DOMAIN}_devices_{entry.data[CONF_HOST]}",
-        SCAN_INTERVAL,
+        scan_interval,
     )
     
     # Store known devices for dynamic entity creation

@@ -27,7 +27,11 @@ from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
 )
 
-from ..const import DOMAIN
+from ..const import (
+    DOMAIN,
+    CONF_QMODEM_SENSOR_TIMEOUT,
+    DEFAULT_QMODEM_SENSOR_TIMEOUT,
+)
 from ..shared_data_manager import SharedDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -197,13 +201,20 @@ async def async_setup_entry(
     data_manager_key = f"data_manager_{entry.entry_id}"
     data_manager = hass.data[DOMAIN][data_manager_key]
     
+    # Get timeout from configuration (priority: options > data > default)
+    timeout = entry.options.get(
+        CONF_QMODEM_SENSOR_TIMEOUT,
+        entry.data.get(CONF_QMODEM_SENSOR_TIMEOUT, DEFAULT_QMODEM_SENSOR_TIMEOUT)
+    )
+    scan_interval = timedelta(seconds=timeout)
+    
     # Create coordinator using shared data manager
     coordinator = SharedDataUpdateCoordinator(
         hass,
         data_manager,
         ["qmodem_info"],  # Data types this coordinator needs
         f"{DOMAIN}_qmodem_{entry.data[CONF_HOST]}",
-        SCAN_INTERVAL,
+        scan_interval,
     )
 
     # Fetch initial data
@@ -273,16 +284,12 @@ class QModemSensor(CoordinatorEntity, SensorEntity):
         """Return the value reported by the sensor."""
         if not self.coordinator.data:
             _LOGGER.debug("No coordinator data available for %s", self.entity_description.key)
-            return "unavailable"
+            return None
 
         qmodem_info = self.coordinator.data.get("qmodem_info")
         if qmodem_info is None:
             _LOGGER.debug("No qmodem_info in coordinator data for %s", self.entity_description.key)
-            # Check if modem_ctrl is available, if not return specific message
-            modem_ctrl_available = self.hass.data.get(DOMAIN, {}).get("modem_ctrl_available", False)
-            if not modem_ctrl_available:
-                return "modem_ctrl_unavailable"
-            return "no_data"
+            return None
 
         # Parse the qmodem data and extract the requested value
         try:
@@ -422,14 +429,11 @@ class QModemSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Return additional state attributes."""
-        modem_ctrl_available = self.hass.data.get(DOMAIN, {}).get("modem_ctrl_available", False)
-        
+        """Return additional state attributes."""        
         attributes = {
             "router_host": self._host,
             "last_update": self.coordinator.last_update_success,
             "device_type": "qmodem",
-            "modem_ctrl_available": modem_ctrl_available,
         }
 
         # Add status information based on data availability

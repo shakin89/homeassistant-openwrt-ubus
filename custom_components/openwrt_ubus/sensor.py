@@ -8,16 +8,39 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    CONF_ENABLE_QMODEM_SENSORS,
+    CONF_ENABLE_STA_SENSORS,
+    CONF_ENABLE_SYSTEM_SENSORS,
+    DEFAULT_ENABLE_QMODEM_SENSORS,
+    DEFAULT_ENABLE_STA_SENSORS,
+    DEFAULT_ENABLE_SYSTEM_SENSORS,
+)
 from .sensors import system_sensor, qmodem_sensor, sta_sensor
 
 _LOGGER = logging.getLogger(__name__)
 
-# Sensor modules to setup
+# Sensor modules configuration
 SENSOR_MODULES = [
-    system_sensor,
-    qmodem_sensor, 
-    sta_sensor,
+    {
+        "module": system_sensor,
+        "config_key": CONF_ENABLE_SYSTEM_SENSORS,
+        "default": DEFAULT_ENABLE_SYSTEM_SENSORS,
+        "name": "system_sensor"
+    },
+    {
+        "module": qmodem_sensor,
+        "config_key": CONF_ENABLE_QMODEM_SENSORS,
+        "default": DEFAULT_ENABLE_QMODEM_SENSORS,
+        "name": "qmodem_sensor"
+    },
+    {
+        "module": sta_sensor,
+        "config_key": CONF_ENABLE_STA_SENSORS,
+        "default": DEFAULT_ENABLE_STA_SENSORS,
+        "name": "sta_sensor"
+    },
 ]
 
 
@@ -31,12 +54,27 @@ async def async_setup_entry(
     
     coordinators = []
     
-    # Setup each sensor module
-    for module in SENSOR_MODULES:
+    # Setup each sensor module based on configuration
+    for sensor_config in SENSOR_MODULES:
+        module = sensor_config["module"]
+        config_key = sensor_config["config_key"]
+        default_enabled = sensor_config["default"]
+        module_name = sensor_config["name"]
+        
+        # Check if this sensor type is enabled
+        # Priority: options > data > default
+        enabled = entry.options.get(
+            config_key, 
+            entry.data.get(config_key, default_enabled)
+        )
+        
+        if not enabled:
+            _LOGGER.info("Sensor module %s is disabled in configuration", module_name)
+            continue
+        
         try:
             # Check if module has async_setup_entry function
             if hasattr(module, 'async_setup_entry'):
-                module_name = module.__name__.split('.')[-1]
                 _LOGGER.debug("Loading sensor module: %s", module_name)
                 
                 # Call the module's setup function
@@ -46,14 +84,11 @@ async def async_setup_entry(
                     coordinators.append(coordinator)
                     _LOGGER.info("Successfully loaded sensor module: %s", module_name)
                 else:
-                    module_name = module.__name__.split('.')[-1]
                     _LOGGER.debug("Sensor module %s returned no coordinator", module_name)
             else:
-                module_name = module.__name__.split('.')[-1]
                 _LOGGER.warning("Sensor module %s has no async_setup_entry function", module_name)
                 
         except Exception as exc:
-            module_name = getattr(module, '__name__', 'unknown').split('.')[-1]
             _LOGGER.error("Error setting up sensor module %s: %s", module_name, exc)
     
     _LOGGER.info("Completed loading of %d sensor modules", len(coordinators))
