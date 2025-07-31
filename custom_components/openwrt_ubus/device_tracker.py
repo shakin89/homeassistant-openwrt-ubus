@@ -200,13 +200,35 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
     def device_info(self) -> DeviceInfo:
         """Return device info with updated device name."""
         device_name = self._get_device_name()
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.mac_address)},
-            name=device_name,
-            model="Network Device",
-            connections={("mac", self.mac_address)},
-            via_device=(DOMAIN, self.via_device)
-        )
+        device_info_dict = {
+            "identifiers": {(DOMAIN, self.mac_address)},
+            "name": device_name,
+            "model": "Network Device",
+            "connections": {("mac", self.mac_address)},
+        }
+        
+        # Only set via_device if we have a valid AP device (not "Unknown AP")
+        if self.ap_device != "Unknown AP":
+            device_info_dict["via_device"] = (DOMAIN, self.via_device)
+        
+        return DeviceInfo(**device_info_dict)
+
+    @property
+    def ap_device(self) -> str:
+        """Return the access point device this device is connected to."""
+        # Get device statistics from shared coordinator
+        device_stats = self.coordinator.data.get("device_statistics", {})
+        device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
+        if device_data:
+            return device_data.get("ap_device", "Unknown AP")
+        return "Unknown AP"
+
+    @property
+    def via_device(self) -> str:
+        """Return the via device info for this device."""
+        if self.ap_device != "Unknown AP":
+            return f"{self._host}_ap_{self.ap_device}"
+        return self._host
 
     @property
     def ap_device(self) -> str:

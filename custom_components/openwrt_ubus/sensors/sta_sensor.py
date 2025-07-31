@@ -395,7 +395,7 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
                     if time_diff > 0 and byte_diff >= 0:
                         # Convert bytes/second to Mbps (1 byte/s = 8 bits/s, 1 Mbps = 1,000,000 bits/s)
                         speed_kbps = (byte_diff * 8) / (time_diff * 1_000)
-                        speed_kbps = round(speed_mbps, 3)
+                        speed_kbps = round(speed_kbps, 3)
                     else:
                         speed_kbps = 0
                 else:
@@ -425,7 +425,7 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
                     if time_diff > 0 and byte_diff >= 0:
                         # Convert bytes/second to Mbps (1 byte/s = 8 bits/s, 1 Mbps = 1,000,000 bits/s)
                         speed_kbps = (byte_diff * 8) / (time_diff * 1_000)
-                        speed_lbps = round(speed_mbps, 3)
+                        speed_kbps = round(speed_kbps, 3)
                     else:
                         speed_kbps = 0
                 else:
