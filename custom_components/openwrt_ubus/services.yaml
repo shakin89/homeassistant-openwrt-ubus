@@ -4,4 +4,5 @@ scan_devices:
   name: Scan devices
   description: Manually trigger a device scan on the OpenWrt router
   target:
-    integration: openwrt_ubus
+    entity:
+      integration: openwrt_ubus
