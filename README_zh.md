@@ -1,5 +1,8 @@
 # OpenWrt Ubus Home Assistant 集成
 
+[![Validate with hassfest](https://github.com/FUjr/homeassistant-openwrt-ubus/actions/workflows/hassfest.yml/badge.svg?branch=dev)](https://github.com/FUjr/homeassistant-openwrt-ubus/actions/workflows/hassfest.yml)
+[![Validate](https://github.com/FUjr/homeassistant-openwrt-ubus/actions/workflows/validate.yml/badge.svg?branch=dev)](https://github.com/FUjr/homeassistant-openwrt-ubus/actions/workflows/validate.yml)
+
 **中文版本** | [English Version](README.md)
 
 > **📝 AI 生成文档声明**  
