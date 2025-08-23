@@ -1,0 +1,12 @@
+{
+  "name": "OpenWrt Ubus Integration",
+  "hacs": "1.6.0",
+  "domains": [
+    "device_tracker",
+    "sensor",
+    "button", 
+    "switch"
+  ],
+  "iot_class": "Local Polling",
+  "homeassistant": "2023.1.0",
+}
