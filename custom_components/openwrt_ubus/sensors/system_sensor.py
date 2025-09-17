@@ -21,6 +21,7 @@ from homeassistant.const import (
     PERCENTAGE,
     UnitOfInformation,
     UnitOfTime,
+    UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -53,6 +54,14 @@ SENSOR_DESCRIPTIONS = [
         suggested_unit_of_measurement=UnitOfTime.HOURS,
         entity_category=None,  # Main sensor, not diagnostic
         icon="mdi:clock-outline",
+    ),
+    SensorEntityDescription(
+        key="conntrack_count",
+        name="Connection Count",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=None,
+        icon="mdi:connection",
+        entity_category=None,
     ),
     SensorEntityDescription(
         key="load_1",
@@ -93,6 +102,14 @@ SENSOR_DESCRIPTIONS = [
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfInformation.MEGABYTES,
         icon="mdi:memory",
+        entity_category=None,
+    ),
+    SensorEntityDescription(
+        key="dhcp_clients_count",
+        name="DHCP Clients Count",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=None,
+        icon="mdi:account-multiple",
         entity_category=None,
     ),
     SensorEntityDescription(
@@ -163,6 +180,22 @@ SENSOR_DESCRIPTIONS = [
         icon="mdi:chip",
         entity_category=None,
     ),
+    SensorEntityDescription(
+        key="root_filesystem_free",
+        name="Root Filesystem Free",
+        device_class=SensorDeviceClass.DATA_SIZE,
+        native_unit_of_measurement=UnitOfInformation.MEGABYTES,
+        icon="mdi:harddisk",
+        entity_category=None,
+    ),
+    SensorEntityDescription(
+        key="root_filesystem_total",
+        name="Root Filesystem Total",
+        device_class=SensorDeviceClass.DATA_SIZE,
+        native_unit_of_measurement=UnitOfInformation.MEGABYTES,
+        icon="mdi:harddisk",
+        entity_category=None,
+    ),
 ]
 
 
@@ -188,7 +221,7 @@ async def async_setup_entry(
     coordinator = SharedDataUpdateCoordinator(
         hass,
         data_manager,
-        ["system_info", "system_board"],  # Data types this coordinator needs
+        ["system_info", "system_board", "conntrack_count", "system_temperatures", "dhcp_clients_count"],  # Data types this coordinator needs
         f"{DOMAIN}_system_{entry.data[CONF_HOST]}",
         scan_interval,
     )
@@ -200,6 +233,21 @@ async def async_setup_entry(
         SystemInfoSensor(coordinator, description)
         for description in SENSOR_DESCRIPTIONS
     ]
+    
+    # Add temperature sensors dynamically based on available sensors
+    if coordinator.data and "system_temperatures" in coordinator.data:
+        temperatures = coordinator.data["system_temperatures"]
+        for sensor_name, temp_value in temperatures.items():
+            temp_description = SensorEntityDescription(
+                key=f"temperature_{sensor_name}",
+                name=f"Temperature {sensor_name}",
+                device_class=SensorDeviceClass.TEMPERATURE,
+                state_class=SensorStateClass.MEASUREMENT,
+                native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+                icon="mdi:thermometer",
+                entity_category=None,
+            )
+            entities.append(SystemInfoSensor(coordinator, temp_description))
 
     async_add_entities(entities, True)
 
@@ -304,6 +352,23 @@ class SystemInfoSensor(CoordinatorEntity, SensorEntity):
         elif key.startswith("board_"):
             board_key = key.replace("board_", "")
             return board_info.get(board_key)
+        elif key == "conntrack_count":
+            return self.coordinator.data.get("conntrack_count")
+        elif key.startswith("temperature_"):
+            # Extract sensor name from key (after "temperature_")
+            sensor_name = key[12:]  # Remove "temperature_" prefix
+            temperatures = self.coordinator.data.get("system_temperatures", {})
+            return temperatures.get(sensor_name)
+        elif key == "dhcp_clients_count":
+            return self.coordinator.data.get("dhcp_clients_count")
+        elif key == "root_filesystem_total":
+            root = self.coordinator.data.get("system_info", {}).get("root", {})
+            total = root.get("total")
+            return round(total / 1024, 2) if total is not None else None
+        elif key == "root_filesystem_free":
+            root = self.coordinator.data.get("system_info", {}).get("root", {})
+            free = root.get("free")
+            return round(free / 1024, 2) if free is not None else None
         
         return None
 
