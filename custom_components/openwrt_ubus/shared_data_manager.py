@@ -133,6 +133,7 @@ class SharedUbusDataManager:
             "conntrack_count": timedelta(seconds=system_timeout),  # Connection tracking count
             "system_temperatures": timedelta(seconds=system_timeout),  # System temperature sensors
             "dhcp_clients_count": timedelta(seconds=sta_timeout),  # DHCP clients count
+            "network_devices": timedelta(seconds=system_timeout),  # Network device status
         }
         self._update_locks: Dict[str, asyncio.Lock] = {
             key: asyncio.Lock() for key in self._update_intervals
@@ -516,6 +517,47 @@ class SharedUbusDataManager:
             raise UpdateFailed(f"Error fetching DHCP clients count: {exc}")
 
     @ubus_auto_reconnect(max_retries=1)
+    async def _fetch_network_devices(self) -> Dict[str, Any]:
+        """Fetch network device status."""
+        client = await self._get_ubus_client()
+        try:
+            result = await client.get_network_devices()
+            
+            # Debug log the raw response
+            _LOGGER.debug("Raw network devices response: %s", result)
+            
+            # Handle different response formats
+            if isinstance(result, dict) and "values" in result:
+                # Some OpenWrt versions return data in "values" field
+                network_devices = result["values"]
+            
+            # Handle empty response due to permission issues
+            if not result:
+                _LOGGER.warning(
+                    "No network devices data received. "
+                    "Please check OpenWrt permissions for 'network.device' API"
+                )
+                return {"network_devices": {}}
+            elif isinstance(result, dict):
+                # Standard response format
+                network_devices = result
+            else:
+                # Unexpected format
+                _LOGGER.error("Unexpected network devices response format: %s", type(result))
+                network_devices = {}
+            
+            # Validate the response contains expected data
+            if not network_devices or not isinstance(network_devices, dict):
+                _LOGGER.error("Invalid network devices data: %s", network_devices)
+                return {"network_devices": {}}
+                
+            return {"network_devices": network_devices}
+            
+        except Exception as exc:
+            _LOGGER.error("Error fetching network devices: %s", exc, exc_info=True)
+            raise UpdateFailed(f"Error fetching network devices: {exc}")
+
+    @ubus_auto_reconnect(max_retries=1)
     async def _fetch_system_data_batch(self, system_types: set) -> Dict[str, Any]:
         """Fetch system data in batch with auto-reconnect protection."""
         combined_data = {}
@@ -527,15 +569,8 @@ class SharedUbusDataManager:
                     system_info = await system_client.system_info()
                     self._data_cache["system_info"] = system_info  # Store raw data
                     self._last_update["system_info"] = datetime.now()
-            combined_data["system_info"] = self._data_cache["system_info"]
-	
-        if "system_stat" in system_types:
-            if await self._should_update("system_stat"):
-                async with self._update_locks["system_stat"]:
-                    system_stat = await system_client.system_stat()
-                    self._data_cache["system_stat"] = system_stat  # Store raw data
-                    self._last_update["system_stat"] = datetime.now()
-            combined_data["system_stat"] = self._data_cache["system_stat"]
+            # Use safe get to avoid KeyError if cache not yet populated
+            combined_data["system_info"] = self._data_cache.get("system_info", {})
         
         if "system_board" in system_types:
             if await self._should_update("system_board"):
@@ -543,12 +578,21 @@ class SharedUbusDataManager:
                     board_info = await system_client.system_board()
                     self._data_cache["system_board"] = board_info  # Store raw data
                     self._last_update["system_board"] = datetime.now()
-            combined_data["system_board"] = self._data_cache["system_board"]
+            # Use safe get to avoid KeyError if cache not yet populated
+            combined_data["system_board"] = self._data_cache.get("system_board", {})
         
         return combined_data
 
     async def get_data(self, data_type: str) -> Dict[str, Any]:
         """Get cached data or fetch if needed."""
+        # Defensive: If the data_type is not in update_locks, log and raise
+        if data_type not in self._update_locks:
+            _LOGGER.error(
+                "Requested data_type '%s' is not managed by SharedUbusDataManager. "
+                "Available types: %s", data_type, list(self._update_locks.keys())
+            )
+            raise ValueError(f"Unknown data type: {data_type}")
+
         async with self._update_locks[data_type]:
             if not await self._should_update(data_type) and data_type in self._data_cache:
                 # Return cached data in the expected format for coordinator
@@ -579,7 +623,14 @@ class SharedUbusDataManager:
                     data = await self._fetch_system_temperatures()
                 elif data_type == "dhcp_clients_count":
                     data = await self._fetch_dhcp_clients_count()
+                elif data_type == "network_devices":
+                    data = await self._fetch_network_devices()
                 else:
+                    # Defensive: This should not happen due to the check above, but log just in case
+                    _LOGGER.error(
+                        "Unknown data type requested: %s. Available: %s",
+                        data_type, list(self._update_locks.keys())
+                    )
                     raise ValueError(f"Unknown data type: {data_type}")
 
                 # Store the actual data (extract from wrapper if needed)
@@ -604,6 +655,18 @@ class SharedUbusDataManager:
         """Get multiple data types in a single call to optimize API usage."""
         combined_data = {}
         
+        # Defensive: Filter out unknown data_types and log them
+        known_types = set(self._update_locks.keys())
+        requested_types = set(data_types)
+        unknown_types = requested_types - known_types
+        if unknown_types:
+            _LOGGER.error(
+                "Requested unknown data types in get_combined_data: %s. Known types: %s",
+                list(unknown_types), list(known_types)
+            )
+        # Only process known types
+        data_types = [dt for dt in data_types if dt in known_types]
+
         # Group data types that can be fetched together
         system_types = {"system_info", "system_stat", "system_board"} & set(data_types)
         other_types = set(data_types) - system_types
@@ -618,7 +681,8 @@ class SharedUbusDataManager:
                 # Use cached data if available
                 for data_type in system_types:
                     if data_type in self._data_cache:
-                        combined_data.update(self._data_cache[data_type])
+                        # Ensure cached data is placed under its data_type key
+                        combined_data[data_type] = self._data_cache[data_type]
         
         # Fetch other data types individually
         for data_type in other_types:
@@ -692,8 +756,19 @@ class SharedDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self):
         """Fetch data using shared manager."""
         try:
-            return await self.data_manager.get_combined_data(self.data_types)
+            data = await self.data_manager.get_combined_data(self.data_types)
+            # Defensive: If no data is returned, log and return empty dict
+            if not data:
+                _LOGGER.debug(
+                    "SharedDataUpdateCoordinator '%s' got no data for types: %s",
+                    self.name, self.data_types
+                )
+            return data
         except Exception as exc:
+            _LOGGER.error(
+                "Error in SharedDataUpdateCoordinator '%s' for types %s: %s",
+                self.name, self.data_types, exc
+            )
             raise UpdateFailed(f"Error communicating with API: {exc}")
 
     async def async_shutdown(self):

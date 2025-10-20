@@ -71,7 +71,7 @@ Before installing the integration, ensure your OpenWrt router meets these requir
 **Required Packages:**
 ```bash
 # Install essential packages on your OpenWrt router
-opkg install rpcd uhttpd-mod-ubus
+opkg install rpcd uhttpd-mod-ubus luci-app-uhttpd
 
 # For device kick functionality (optional)
 opkg install hostapd
@@ -137,20 +137,23 @@ ssh root@your_router_ip
 mkdir -p /usr/share/rpcd/acl.d
 
 # Create ACL file for Home Assistant
-cat > /usr/share/rpcd/acl.d/hass.json << 'EOF'
+cat > /usr/share/rpcd/acl.d/root.json << 'EOF'
 {
-  "hass": {
-    "description": "Access role for OpenWrt ubus integration",
+  "root": {
+    "description": "Root user full access to ubus",
     "read": {
       "ubus": {
-        "iwinfo": ["devices","info","assoclist",],
-        "hostapd.*": ["get_clients"],
-        "uci": ["get"]
+        "*": ["*"]
       }
     },
-    "write": {}
+    "write": {
+      "ubus": {
+        "*": ["*"]
+      }
+    }
   }
 }
+
 EOF
 
 # Restart services to apply changes

@@ -71,7 +71,7 @@ OpenWrt Ubus 集成是一个功能全面的 Home Assistant 自定义集成，它
 **必需软件包：**
 ```bash
 # 在您的 OpenWrt 路由器上安装必要软件包
-opkg install rpcd uhttpd-mod-ubus
+opkg install rpcd uhttpd-mod-ubus luci-app-uhttpd
 
 # 设备踢出功能（可选）
 opkg install hostapd
@@ -137,20 +137,23 @@ ssh root@your_router_ip
 mkdir -p /usr/share/rpcd/acl.d
 
 # 为 Home Assistant 创建 ACL 文件
-cat > /usr/share/rpcd/acl.d/hass.json << 'EOF'
+cat > /usr/share/rpcd/acl.d/root.json << 'EOF'
 {
-  "hass": {
-    "description": "Access role for OpenWrt ubus integration",
+  "root": {
+    "description": "Root user full access to ubus",
     "read": {
       "ubus": {
-        "iwinfo": ["devices","info","assoclist",],
-        "hostapd.*": ["get_clients"],
-        "uci": ["get"]
+        "*": ["*"]
       }
     },
-    "write": {}
+    "write": {
+      "ubus": {
+        "*": ["*"]
+      }
+    }
   }
 }
+
 EOF
 
 # 重启服务以应用更改

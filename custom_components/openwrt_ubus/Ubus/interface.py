@@ -23,6 +23,10 @@ from .const import (
     API_SUBSYS_SESSION,
     API_UBUS_RPC_SESSION,
     HTTP_STATUS_OK,
+    UBUS_ERROR_SUCCESS,
+    UBUS_ERROR_PERMISSION_DENIED,
+    UBUS_ERROR_NOT_FOUND,
+    UBUS_ERROR_NO_DATA,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -138,12 +142,33 @@ class Ubus:
         
         # Handle single response format (fallback)
         if API_ERROR in json_response:
-            if (
-                API_MESSAGE in json_response[API_ERROR]
-                and json_response[API_ERROR][API_MESSAGE] == "Access denied"
-            ):
-                raise PermissionError(json_response[API_ERROR][API_MESSAGE])
-            raise ConnectionError(json_response[API_ERROR][API_MESSAGE])
+            error_message = json_response[API_ERROR].get(API_MESSAGE, "Unknown error")
+            error_code = json_response[API_ERROR].get("code", -1)
+            
+            # Special handling for permission errors
+            if error_code == -32002 or "Access denied" in error_message:
+                _LOGGER.warning(
+                    "Permission denied when calling %s.%s: %s (code: %d)",
+                    subsystem,
+                    method,
+                    error_message,
+                    error_code
+                )
+                raise PermissionError(
+                    f"Permission denied for {subsystem}.{method}: {error_message} (code: {error_code})"
+                )
+                
+            # General error handling
+            _LOGGER.error(
+                "API call failed for %s.%s: %s (code: %d)",
+                subsystem,
+                method,
+                error_message,
+                error_code
+            )
+            raise ConnectionError(
+                f"API call failed for {subsystem}.{method}: {error_message} (code: {error_code})"
+            )
         return [json_response]
 
     async def api_call(
@@ -209,20 +234,73 @@ class Ubus:
             )
 
         if API_ERROR in json_response:
-            if (
-                API_MESSAGE in json_response[API_ERROR]
-                and json_response[API_ERROR][API_MESSAGE] == "Access denied"
-            ):
-                raise PermissionError(json_response[API_ERROR][API_MESSAGE])
-            raise ConnectionError(json_response[API_ERROR][API_MESSAGE])
+            error_message = json_response[API_ERROR].get(API_MESSAGE, "Unknown error")
+            error_code = json_response[API_ERROR].get("code", -1)
+            
+            # Special handling for permission errors
+            if error_code == -32002 or "Access denied" in error_message:
+                _LOGGER.warning(
+                    "Permission denied when calling %s.%s: %s (code: %d)",
+                    subsystem,
+                    method,
+                    error_message,
+                    error_code
+                )
+                raise PermissionError(
+                    f"Permission denied for {subsystem}.{method}: {error_message} (code: {error_code})"
+                )
+                
+            # General error handling
+            _LOGGER.error(
+                "API call failed for %s.%s: %s (code: %d)",
+                subsystem,
+                method,
+                error_message,
+                error_code
+            )
+            raise ConnectionError(
+                f"API call failed for {subsystem}.{method}: {error_message} (code: {error_code})"
+            )
 
         if rpc_method == API_RPC_CALL:
             try:
-                return json_response[API_RESULT][1]
-            except IndexError:
+                result = json_response[API_RESULT]
+                if isinstance(result, list) and len(result) > 1:
+                    # Check if first element is an error code
+                    error_code = result[0]
+                    if error_code == UBUS_ERROR_SUCCESS:
+                        # Success - return the data
+                        return result[1]
+                    else:
+                        # Error code - log with descriptive message and return None
+                        error_msg = self._get_error_message(error_code)
+                        _LOGGER.debug("API call failed with error code %s (%s): %s", 
+                                    error_code, error_msg, result[1] if len(result) > 1 else "No error message")
+                        return None
+                elif isinstance(result, list) and len(result) == 1:
+                    # Single element result - might be an error code
+                    error_code = result[0]
+                    error_msg = self._get_error_message(error_code)
+                    _LOGGER.debug("API call failed with error code %s (%s) - no error message", error_code, error_msg)
+                    return None
+                else:
+                    _LOGGER.debug("Unexpected result format: %s", result)
+                    return None
+            except (IndexError, KeyError) as exc:
+                _LOGGER.debug("Error parsing API result: %s", exc)
                 return None
         else:
             return json_response[API_RESULT]
+
+    def _get_error_message(self, error_code):
+        """Get descriptive error message for ubus error codes."""
+        error_messages = {
+            UBUS_ERROR_SUCCESS: "Success",
+            UBUS_ERROR_PERMISSION_DENIED: "Permission Denied",
+            UBUS_ERROR_NOT_FOUND: "Not Found",
+            UBUS_ERROR_NO_DATA: "No Data",
+        }
+        return error_messages.get(error_code, f"Unknown Error ({error_code})")
 
     def api_debugging(self, debug_api):
         """Enable/Disable API calls debugging."""
