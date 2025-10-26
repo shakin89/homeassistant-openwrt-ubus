@@ -25,8 +25,10 @@ from homeassistant.helpers.update_coordinator import (
 from .const import (
     CONF_DHCP_SOFTWARE,
     CONF_WIRELESS_SOFTWARE,
+    CONF_TRACKING_METHOD,
     DEFAULT_DHCP_SOFTWARE,
     DEFAULT_WIRELESS_SOFTWARE,
+    DEFAULT_TRACKING_METHOD,
     DHCP_SOFTWARES,
     DOMAIN,
     WIRELESS_SOFTWARES,
@@ -36,6 +38,110 @@ from .shared_data_manager import SharedDataUpdateCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(seconds=30)
+
+
+def _generate_unique_id(host: str, mac_address: str, tracking_method: str) -> str:
+    """Generate unique_id based on tracking method.
+
+    Args:
+        host: Router hostname
+        mac_address: Device MAC address (normalized uppercase)
+        tracking_method: "uniqueid" or "combined"
+
+    Returns:
+        Unique ID string
+    """
+    if tracking_method == "uniqueid":
+        return mac_address
+    else:  # "combined" (default)
+        return f"{host}_{mac_address}"
+
+
+async def _migrate_device_tracker_unique_ids(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    old_tracking_method: str,
+    new_tracking_method: str
+) -> None:
+    """Migrate device tracker unique_ids when tracking method changes.
+
+    Args:
+        hass: Home Assistant instance
+        entry: Config entry
+        old_tracking_method: Previous tracking method
+        new_tracking_method: New tracking method
+    """
+    if old_tracking_method == new_tracking_method:
+        return
+
+    entity_registry = er.async_get(hass)
+    host = entry.data[CONF_HOST]
+
+    _LOGGER.info(
+        "Migrating device tracker unique_ids from '%s' to '%s'",
+        old_tracking_method, new_tracking_method
+    )
+
+    # Get all device tracker entities for this config entry
+    existing_entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+    migrated_count = 0
+
+    for entity_entry in existing_entities:
+        if entity_entry.domain != "device_tracker" or entity_entry.platform != DOMAIN:
+            continue
+
+        old_unique_id = entity_entry.unique_id
+
+        # Extract MAC address from old unique_id
+        if old_tracking_method == "combined":
+            # Format: "{host}_{mac_address}"
+            # Use rsplit to handle hostnames with underscores correctly
+            if "_" in old_unique_id:
+                mac_address = old_unique_id.rsplit("_", 1)[-1].upper()
+            else:
+                _LOGGER.warning("Cannot parse MAC from unique_id: %s", old_unique_id)
+                continue
+        else:  # old was "uniqueid"
+            # Format: "{mac_address}"
+            mac_address = old_unique_id.upper()
+
+        # Generate new unique_id
+        new_unique_id = _generate_unique_id(host, mac_address, new_tracking_method)
+
+        if old_unique_id == new_unique_id:
+            continue
+
+        # Check if new unique_id already exists
+        existing_entity_id = entity_registry.async_get_entity_id(
+            "device_tracker", DOMAIN, new_unique_id
+        )
+
+        if existing_entity_id and existing_entity_id != entity_entry.entity_id:
+            _LOGGER.warning(
+                "Cannot migrate %s to %s: new unique_id already exists for entity %s",
+                old_unique_id, new_unique_id, existing_entity_id
+            )
+            continue
+
+        # Perform migration
+        try:
+            entity_registry.async_update_entity(
+                entity_entry.entity_id,
+                new_unique_id=new_unique_id
+            )
+            migrated_count += 1
+            _LOGGER.debug(
+                "Migrated entity %s: %s → %s",
+                entity_entry.entity_id, old_unique_id, new_unique_id
+            )
+        except Exception as exc:
+            _LOGGER.error(
+                "Failed to migrate entity %s from %s to %s: %s",
+                entity_entry.entity_id, old_unique_id, new_unique_id, exc
+            )
+
+    _LOGGER.info("Migration completed: %d entities migrated", migrated_count)
+
 
 PLATFORM_SCHEMA = DEVICE_TRACKER_PLATFORM_SCHEMA.extend(
     {
@@ -56,7 +162,27 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up device tracker from a config entry."""
-    
+
+    # Get tracking method configuration
+    tracking_method = entry.data.get(CONF_TRACKING_METHOD, DEFAULT_TRACKING_METHOD)
+
+    # Check if tracking method changed and perform migration if needed
+    # Store the current tracking method in hass.data for comparison on reload
+    tracking_state_key = f"tracking_method_{entry.entry_id}"
+    old_tracking_method = hass.data[DOMAIN].get(tracking_state_key)
+
+    if old_tracking_method is not None and old_tracking_method != tracking_method:
+        _LOGGER.info(
+            "Tracking method changed from '%s' to '%s', starting migration",
+            old_tracking_method, tracking_method
+        )
+        await _migrate_device_tracker_unique_ids(
+            hass, entry, old_tracking_method, tracking_method
+        )
+
+    # Store current tracking method for future comparisons
+    hass.data[DOMAIN][tracking_state_key] = tracking_method
+
     # Get shared data manager
     data_manager_key = f"data_manager_{entry.entry_id}"
     data_manager = hass.data[DOMAIN][data_manager_key]
@@ -74,9 +200,10 @@ async def async_setup_entry(
     coordinator.known_devices = set()
     coordinator.async_add_entities = async_add_entities
     coordinator.mac2name = {}  # For storing DHCP mappings
-    
+    coordinator.tracking_method = tracking_method  # Store tracking method
+
     # Initialize known_devices from existing entity registry entries
-    await _restore_known_devices_from_registry(hass, entry, coordinator)
+    await _restore_known_devices_from_registry(hass, entry, coordinator, tracking_method)
     _LOGGER.debug("Restored %d known devices from registry", len(coordinator.known_devices))
 
     # Add update listener for dynamic device creation
@@ -127,15 +254,36 @@ async def async_setup_entry(
     coordinator.async_add_listener(_handle_coordinator_update)
 
 
-async def _restore_known_devices_from_registry(hass: HomeAssistant, entry: ConfigEntry, coordinator: SharedDataUpdateCoordinator) -> None:
+async def _restore_known_devices_from_registry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    coordinator: SharedDataUpdateCoordinator,
+    tracking_method: str
+) -> None:
     """Restore known devices from existing entity registry entries."""
     entity_registry = er.async_get(hass)
+    host = entry.data[CONF_HOST]
     existing_entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+
     for entity_entry in existing_entities:
         if entity_entry.domain == "device_tracker" and entity_entry.platform == DOMAIN:
-            # Extract MAC address from unique_id (format: "{host}_{mac_address}")
-            if entity_entry.unique_id and "_" in entity_entry.unique_id:
-                mac_address = entity_entry.unique_id.split("_", 1)[1].upper()  # Normalize to uppercase
+            # Extract MAC address from unique_id based on tracking method
+            if entity_entry.unique_id:
+                if tracking_method == "uniqueid":
+                    # Format: "{mac_address}"
+                    mac_address = entity_entry.unique_id.upper()
+                else:  # "combined"
+                    # Format: "{host}_{mac_address}"
+                    # Use rsplit to handle hostnames with underscores correctly
+                    if "_" in entity_entry.unique_id:
+                        mac_address = entity_entry.unique_id.rsplit("_", 1)[-1].upper()
+                    else:
+                        _LOGGER.warning(
+                            "Cannot parse MAC from unique_id: %s (expected format: {host}_{mac})",
+                            entity_entry.unique_id
+                        )
+                        continue
+
                 coordinator.known_devices.add(mac_address)
                 _LOGGER.debug("Restored known device from registry: %s", mac_address)
 
@@ -144,18 +292,20 @@ async def _create_entities_for_devices(hass: HomeAssistant, entry: ConfigEntry, 
     """Create device tracker entities for the given MAC addresses."""
     entity_registry = er.async_get(hass)
     new_entities = []
-    
+    tracking_method = coordinator.tracking_method
+    host = entry.data[CONF_HOST]
+
     for mac_address in mac_addresses:
         # Normalize MAC address format to ensure consistency
         mac_address = mac_address.upper()
-        
+
         # Skip if already in known devices
         if mac_address in coordinator.known_devices:
             _LOGGER.debug("Device %s already in known devices, skipping", mac_address)
             continue
-            
-        # Check if entity already exists in registry
-        unique_id = f"{entry.data[CONF_HOST]}_{mac_address}"
+
+        # Generate unique_id based on tracking method
+        unique_id = _generate_unique_id(host, mac_address, tracking_method)
         existing_entity_id = entity_registry.async_get_entity_id(
             "device_tracker", DOMAIN, unique_id
         )
@@ -192,7 +342,12 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
         super().__init__(coordinator)
         self.mac_address = mac_address
         self._host = coordinator.data_manager.entry.data[CONF_HOST]
-        self._attr_unique_id = f"{self._host}_{mac_address}"
+        self._tracking_method = coordinator.tracking_method
+
+        # Generate unique_id based on tracking method
+        self._attr_unique_id = _generate_unique_id(
+            self._host, mac_address, self._tracking_method
+        )
         self._attr_name = None  # Will be set dynamically
         self._attr_entity_registry_enabled_default = True  # Enable by default
 
@@ -212,23 +367,6 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
             device_info_dict["via_device"] = (DOMAIN, self.via_device)
         
         return DeviceInfo(**device_info_dict)
-
-    @property
-    def ap_device(self) -> str:
-        """Return the access point device this device is connected to."""
-        # Get device statistics from shared coordinator
-        device_stats = self.coordinator.data.get("device_statistics", {})
-        device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
-        if device_data:
-            return device_data.get("ap_device", "Unknown AP")
-        return "Unknown AP"
-
-    @property
-    def via_device(self) -> str:
-        """Return the via device info for this device."""
-        if self.ap_device != "Unknown AP":
-            return f"{self._host}_ap_{self.ap_device}"
-        return self._host
 
     @property
     def ap_device(self) -> str:

@@ -30,6 +30,7 @@ from .const import (
     CONF_STA_SENSOR_TIMEOUT,
     CONF_AP_SENSOR_TIMEOUT,
     CONF_SERVICE_TIMEOUT,
+    CONF_TRACKING_METHOD,
     DEFAULT_DHCP_SOFTWARE,
     DEFAULT_WIRELESS_SOFTWARE,
     DEFAULT_ENABLE_QMODEM_SENSORS,
@@ -45,9 +46,11 @@ from .const import (
     DEFAULT_STA_SENSOR_TIMEOUT,
     DEFAULT_AP_SENSOR_TIMEOUT,
     DEFAULT_SERVICE_TIMEOUT,
+    DEFAULT_TRACKING_METHOD,
     DHCP_SOFTWARES,
     DOMAIN,
     WIRELESS_SOFTWARES,
+    TRACKING_METHODS,
     API_SUBSYS_RC,
     API_METHOD_LIST,
 )
@@ -67,6 +70,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_DHCP_SOFTWARE, default=DEFAULT_DHCP_SOFTWARE): vol.In(
             DHCP_SOFTWARES
+        ),
+        vol.Optional(CONF_TRACKING_METHOD, default=DEFAULT_TRACKING_METHOD): vol.In(
+            TRACKING_METHODS
         ),
     }
 )
@@ -335,6 +341,10 @@ class OpenwrtUbusOptionsFlow(OptionsFlow):
                     CONF_DHCP_SOFTWARE,
                     default=current_data.get(CONF_DHCP_SOFTWARE, DEFAULT_DHCP_SOFTWARE)
                 ): vol.In(DHCP_SOFTWARES),
+                vol.Optional(
+                    CONF_TRACKING_METHOD,
+                    default=current_data.get(CONF_TRACKING_METHOD, DEFAULT_TRACKING_METHOD)
+                ): vol.In(TRACKING_METHODS),
                 vol.Optional(
                     CONF_ENABLE_SYSTEM_SENSORS,
                     default=current_data.get(CONF_ENABLE_SYSTEM_SENSORS, DEFAULT_ENABLE_SYSTEM_SENSORS)
