@@ -95,6 +95,7 @@ class SharedUbusDataManager:
         self.entry = entry
         self._data_cache: Dict[str, Dict[str, Any]] = {}
         self._last_update: Dict[str, datetime] = {}
+        self._interface_to_ssid = {}  # Cache for interface->SSID mapping
         
         # Get timeout values from configuration (priority: options > data > default)
         system_timeout = entry.options.get(
@@ -293,20 +294,31 @@ class SharedUbusDataManager:
             raise UpdateFailed(f"Error communicating with OpenWrt: {exc}") from exc
 
     @ubus_auto_reconnect(max_retries=1)
+    async def _get_interface_to_ssid_mapping(self) -> Dict[str, str]:
+        """Get mapping of interface names to SSIDs."""
+        if not self._interface_to_ssid:
+            client = await self._get_ubus_client()
+            self._interface_to_ssid = await client.get_interface_to_ssid_mapping()
+        return self._interface_to_ssid
+
+    @ubus_auto_reconnect(max_retries=1)
     async def _fetch_device_statistics(self) -> Dict[str, Any]:
         """Fetch device statistics from wireless interfaces."""
         wireless_software = self.entry.data.get(CONF_WIRELESS_SOFTWARE, "iwinfo")
         dhcp_software = self.entry.data.get(CONF_DHCP_SOFTWARE, "dnsmasq")
         
         try:
-            # Get MAC to name/IP mapping first
+            # Get MAC to name/IP mapping (includes /etc/ethers)
             mac2name = await self._get_mac2name_mapping(dhcp_software)
+            
+            # Get interface to SSID mapping
+            interface_to_ssid = await self._get_interface_to_ssid_mapping()
             
             # Get device statistics and connection info
             if wireless_software == "hostapd":
-                return await self._fetch_hostapd_data(mac2name)
+                return await self._fetch_hostapd_data(mac2name, interface_to_ssid)
             elif wireless_software == "iwinfo":
-                return await self._fetch_iwinfo_data(mac2name)
+                return await self._fetch_iwinfo_data(mac2name, interface_to_ssid)
             else:
                 return {}
         except Exception as exc:
@@ -314,7 +326,7 @@ class SharedUbusDataManager:
             raise UpdateFailed(f"Error fetching device statistics: {exc}")
 
     @ubus_auto_reconnect(max_retries=1)
-    async def _fetch_hostapd_data(self, mac2name: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+    async def _fetch_hostapd_data(self, mac2name: Dict[str, Dict[str, str]], interface_to_ssid: Dict[str, str]) -> Dict[str, Any]:
         """Fetch data from hostapd using optimized batch calls."""
         client = await self._get_ubus_client("hostapd")
         try:
@@ -324,6 +336,9 @@ class SharedUbusDataManager:
             
             device_statistics = {}
             
+            # Store interface to SSID mapping for AP devices
+            ap_interface_mapping = {}
+
             # Use batch call to get STA data for all AP devices at once
             sta_data_batch = await client.get_all_sta_data_batch(ap_devices, is_hostapd=True)
             
@@ -331,6 +346,9 @@ class SharedUbusDataManager:
                 if ap_device not in sta_data_batch:
                     continue
                     
+                ssid = interface_to_ssid.get(ap_device, ap_device)
+                ap_interface_mapping[ssid] = ap_device
+
                 sta_devices = sta_data_batch[ap_device].get('devices', [])
                 sta_stats = sta_data_batch[ap_device].get('statistics', {})
                 
@@ -342,14 +360,20 @@ class SharedUbusDataManager:
                 
                 for mac in sta_devices:
                     normalized_mac = mac.upper()
-                    hostname = mac2name.get(normalized_mac, {}).get("hostname", normalized_mac.replace(":", ""))
-                    ip_address = mac2name.get(normalized_mac, {}).get("ip", "Unknown IP")
+                    # Get hostname from ethers or DHCP, fallback to MAC if not found
+                    hostname_data = mac2name.get(normalized_mac, {})
+                    hostname = hostname_data.get("hostname", normalized_mac.replace(":", ""))
+                    ip_address = hostname_data.get("ip", "Unknown IP")
+
+                    # Use SSID instead of physical interface name for display
+                    display_ap = ssid
                     
                     # Merge connection info with detailed statistics
                     device_info = {
                         "mac": normalized_mac,
                         "hostname": hostname,
-                        "ap_device": ap_device,
+                        "ap_device": ap_device,  # Keep physical interface for technical reference
+                        "ap_ssid": display_ap,    # Add SSID for display
                         "connected": True,
                         "ip_address": ip_address,
                     }
@@ -365,13 +389,16 @@ class SharedUbusDataManager:
                     
                     device_statistics[normalized_mac] = device_info
             
-            return {"device_statistics": device_statistics}
+            return {
+                "device_statistics": device_statistics,
+                "ap_interface_mapping": ap_interface_mapping
+            }
         except Exception as exc:
             _LOGGER.error("Error fetching hostapd data: %s", exc)
             raise UpdateFailed(f"Error fetching hostapd data: {exc}")
 
     @ubus_auto_reconnect(max_retries=3)
-    async def _fetch_iwinfo_data(self, mac2name: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+    async def _fetch_iwinfo_data(self, mac2name: Dict[str, Dict[str, str]], interface_to_ssid: Dict[str, str]) -> Dict[str, Any]:
         """Fetch data from iwinfo using optimized batch calls."""
         client = await self._get_ubus_client("iwinfo")
         try:
@@ -384,7 +411,8 @@ class SharedUbusDataManager:
                 return {}
             
             device_statistics = {}
-            
+            ap_interface_mapping = {}
+                       
             # Use batch call to get STA data for all AP devices at once
             sta_data_batch = await client.get_all_sta_data_batch(ap_devices, is_hostapd=False)
             
@@ -392,8 +420,11 @@ class SharedUbusDataManager:
                 if ap_device not in sta_data_batch:
                     continue
                     
-                device_data = sta_data_batch[ap_device]
-                
+                # Store the physical interface name for this AP
+                ssid = interface_to_ssid.get(ap_device, ap_device)
+                ap_interface_mapping[ssid] = ap_device
+
+                device_data = sta_data_batch[ap_device]                
                 sta_devices = device_data.get('devices', [])
                 sta_stats = device_data.get('statistics', {})
                 
@@ -405,14 +436,21 @@ class SharedUbusDataManager:
                 
                 for mac in sta_devices:
                     normalized_mac = mac.upper()
-                    hostname = mac2name.get(normalized_mac, {}).get("hostname", normalized_mac.replace(":", ""))
-                    ip_address = mac2name.get(normalized_mac, {}).get("ip", "Unknown IP")
+
+                    # Get hostname from ethers or DHCP
+                    hostname_data = mac2name.get(normalized_mac, {})
+                    hostname = hostname_data.get("hostname", normalized_mac.replace(":", ""))
+                    ip_address = hostname_data.get("ip", "Unknown IP")
+                    
+                    # Use SSID instead of physical interface name for display
+                    display_ap = ssid
                     
                     # Merge connection info with detailed statistics
                     device_info = {
                         "mac": normalized_mac,
                         "hostname": hostname,
-                        "ap_device": ap_device,
+                        "ap_device": ap_device,  # Keep physical interface
+                        "ap_ssid": display_ap,    # Add SSID for display
                         "connected": True,
                         "ip_address": ip_address,
                     }
@@ -428,7 +466,10 @@ class SharedUbusDataManager:
                     
                     device_statistics[normalized_mac] = device_info
             
-            return {"device_statistics": device_statistics}
+            return {
+                "device_statistics": device_statistics,
+                "ap_interface_mapping": ap_interface_mapping
+            }
         except AttributeError as exc:
             # Handle specific case where result format is unexpected
             _LOGGER.error("Error fetching iwinfo data - unexpected data format: %s", exc)
@@ -445,7 +486,16 @@ class SharedUbusDataManager:
         """Generate MAC to name/IP mapping based on DHCP server."""
         mac2name = {}
         client = await self._get_ubus_client()
+
+        # First, get mappings from /etc/ethers (highest priority)
+        try:
+            ethers_mapping = await client.get_ethers_mapping()
+            mac2name.update(ethers_mapping)
+            _LOGGER.debug("Loaded %d entries from /etc/ethers", len(ethers_mapping))
+        except Exception as exc:
+            _LOGGER.debug("Could not read /etc/ethers: %s", exc)
         
+        # Then get DHCP mappings (will not override ethers entries)
         try:
             if dhcp_software == "dnsmasq":
                 # Get dnsmasq lease file location
@@ -460,10 +510,13 @@ class SharedUbusDataManager:
                         for line in lease_result["data"].splitlines():
                             hosts = line.split(" ")
                             if len(hosts) >= 4:
-                                mac2name[hosts[1].upper()] = {
-                                    "hostname": hosts[3],
-                                    "ip": hosts[2]
-                                }
+                                mac_upper = hosts[1].upper()
+                                # Only add if not already in mac2name (ethers has priority)
+                                if mac_upper not in mac2name:
+                                    mac2name[mac_upper] = {
+                                        "hostname": hosts[3],
+                                        "ip": hosts[2]
+                                    }
             elif dhcp_software == "odhcpd":
                 # Get odhcpd leases
                 result = await client.get_dhcp_method("ipv4leases")
@@ -471,15 +524,17 @@ class SharedUbusDataManager:
                     for device in result["device"].values():
                         for lease in device.get("leases", []):
                             mac = lease.get("mac", "")
-                            # Convert aabbccddeeff to aa:bb:cc:dd:ee:ff
                             if mac and len(mac) == 12:
                                 mac = ":".join(mac[i:i+2] for i in range(0, len(mac), 2))
-                                mac2name[mac.upper()] = {
-                                    "hostname": lease.get("hostname", ""),
-                                    "ip": lease.get("ip", "")
-                                }
+                                mac_upper = mac.upper()
+                                # Only add if not already in mac2name
+                                if mac_upper not in mac2name:
+                                    mac2name[mac_upper] = {
+                                        "hostname": lease.get("hostname", ""),
+                                        "ip": lease.get("ip", "")
+                                    }
         except Exception as exc:
-            _LOGGER.warning("Failed to get MAC to name mapping: %s", exc)
+            _LOGGER.warning("Failed to get DHCP MAC to name mapping: %s", exc)
         
         return mac2name
 

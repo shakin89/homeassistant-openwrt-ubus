@@ -394,12 +394,27 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
         device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
         
         if device_data:
-            base_name = f"{connected_router}({self.ap_device})" if self.ap_device != "Unknown AP" else connected_router
+            # Use SSID instead of physical interface name
+            ssid = device_data.get("ap_ssid", "Unknown SSID")
+            base_name = f"{connected_router}({ssid})" if ssid != "Unknown SSID" else connected_router
+            
             hostname = device_data.get("hostname")
+            
+            # Show hostname if available and meaningful
             if hostname and hostname != self.mac_address and hostname != self.mac_address.upper() and hostname != "*":
-                return f"{base_name} {hostname}"
+                # If hostname looks like a domain name, use it directly
+                if "." in hostname:
+                    return f"{base_name} {hostname.split('.')[0]}"
+                else:
+                    return f"{base_name} {hostname}"
             else:
-                return f"{base_name} {self.mac_address.replace(':', '')}"
+                # Try to show IP address if hostname not available
+                ip_address = device_data.get("ip_address", "")
+                if ip_address and ip_address != "Unknown IP":
+                    return f"{base_name} {ip_address}"
+                else:
+                    # Fallback to MAC address
+                    return f"{base_name} {self.mac_address.replace(':', '')}"
         
         # Fallback to MAC address if no device data found
         return f"{connected_router} {self.mac_address.replace(':', '')}"

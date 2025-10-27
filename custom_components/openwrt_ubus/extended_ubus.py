@@ -18,6 +18,7 @@ from .const import (
     API_SUBSYS_UCI,
     API_SUBSYS_QMODEM,
     API_SUBSYS_RC,
+    API_SUBSYS_WIRELESS,
     API_METHOD_BOARD,
     API_METHOD_GET,
     API_METHOD_GET_AP,
@@ -37,7 +38,56 @@ _LOGGER = logging.getLogger(__name__)
 
 class ExtendedUbus(Ubus):
     """Extended Ubus client with specific OpenWrt functionality."""
+    def __init__(
+        self,
+        host,
+        username,
+        password,
+        session,
+    ):
+        super().__init__(host, username, password, session)
+        self._interface_to_ssid_cache = {}  # Cache for interface->SSID mapping
 
+    async def get_interface_to_ssid_mapping(self):
+        """Get mapping of physical interface names to SSIDs."""
+        try:
+            # Check cache first
+            if self._interface_to_ssid_cache:
+                return self._interface_to_ssid_cache
+
+            # Get wireless status
+            result = await self.api_call(
+                API_RPC_CALL,
+                API_SUBSYS_WIRELESS,
+                "status",
+                {}
+            )
+            
+            if not result:
+                return {}
+            
+            mapping = {}
+            
+            # Parse the wireless status to build interface->SSID mapping
+            for radio_name, radio_data in result.items():
+                if isinstance(radio_data, dict) and "interfaces" in radio_data:
+                    for interface in radio_data["interfaces"]:
+                        ifname = interface.get("ifname")
+                        config = interface.get("config", {})
+                        ssid = config.get("ssid")
+                        
+                        if ifname and ssid:
+                            mapping[ifname] = ssid
+                            _LOGGER.debug("Mapped interface %s to SSID %s", ifname, ssid)
+            
+            # Cache the mapping
+            self._interface_to_ssid_cache = mapping
+            return mapping
+            
+        except Exception as exc:
+            _LOGGER.error("Error getting interface to SSID mapping: %s", exc)
+            return {}
+    
     async def file_read(self, path):
         """Read file content."""
         return await self.api_call(
@@ -67,6 +117,35 @@ class ExtendedUbus(Ubus):
             return None
 
     # --- END ETH SENSOR PATCH ---
+
+    async def get_ethers_mapping(self):
+        """Read /etc/ethers file to get MAC to hostname mapping."""
+        try:
+            result = await self.file_read("/etc/ethers")
+            if not result or "data" not in result:
+                return {}
+            
+            mapping = {}
+            for line in result["data"].splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                
+                parts = line.split()
+                if len(parts) >= 2:
+                    mac = parts[0].upper()
+                    hostname = parts[1]
+                    mapping[mac] = {
+                        "hostname": hostname,
+                        "ip": hostname  # Use hostname as fallback for IP field
+                    }
+                    _LOGGER.debug("Added ethers mapping: %s -> %s", mac, hostname)
+            
+            return mapping
+            
+        except Exception as exc:
+            _LOGGER.debug("Error reading /etc/ethers: %s", exc)
+            return {}
 
     async def get_conntrack_count(self):
         """Read connection tracking count from /proc/sys/net/netfilter/nf_conntrack_count."""

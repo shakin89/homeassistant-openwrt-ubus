@@ -68,6 +68,7 @@ API_SUBSYS_SYSTEM = "system"
 API_SUBSYS_UCI = "uci"
 API_SUBSYS_QMODEM = "modem_ctrl"
 API_SUBSYS_RC = "rc"
+API_SUBSYS_WIRELESS = "network.wireless"
 
 # API methods
 API_METHOD_BOARD = "board"
