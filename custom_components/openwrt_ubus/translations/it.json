@@ -18,7 +18,7 @@
         "data": {
           "enable_system_sensors": "Abilita i sensori di sistema",
           "enable_qmodem_sensors": "Abilita i sensori QModem",
-          "enable_sta_sensors": "Abilita i sensori della stazione client",
+          "enable_sta_sensors": "Abilita i sensori Dispositivi Client",
           "enable_ap_sensors": "Abilita i sensori per l'Access Point",
           "enable_service_controls": "Abilita il controllo dei servizi",
           "enable_device_kick_buttons": "Abilita i pulsanti per la disconnessione dei dispositivi (richiede hostapd)"
@@ -37,7 +37,7 @@
         "data": {
           "system_sensor_timeout": "Intervallo di aggiornamento sensori di sistema (secondi)",
           "qmodem_sensor_timeout": "Intervallo di aggiornamento sensori QModem (secondi)",
-          "sta_sensor_timeout": "Intervallo di aggiornamento sensori stazione client (secondi)",
+          "sta_sensor_timeout": "Intervallo di aggiornamento sensori dispositivi client (secondi)",
           "ap_sensor_timeout": "Intervallo di aggiornamento sensori Access Point (secondi)",
           "service_timeout": "Intervallo di aggiornamento stato servizi (secondi)"
         }
