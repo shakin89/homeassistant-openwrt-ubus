@@ -387,12 +387,37 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
 
     def _get_device_name(self) -> str:
         """Get the device name from coordinator data or fallback to MAC."""
-        connected_router = self._host or "Unknown Router"
-        
         # Get device statistics from shared coordinator
         device_stats = self.coordinator.data.get("device_statistics", {})
         device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
-        
+
+        # If tracking method is "uniqueid", use simple naming without AP/SSID info
+        if self._tracking_method == "uniqueid":
+            if device_data:
+                hostname = device_data.get("hostname")
+
+                # Show hostname if available and meaningful
+                if hostname and hostname != self.mac_address and hostname != self.mac_address.upper() and hostname != "*":
+                    # If hostname looks like a domain name, use only the first part
+                    if "." in hostname:
+                        return hostname.split('.')[0]
+                    else:
+                        return hostname
+                else:
+                    # Try to show IP address if hostname not available
+                    ip_address = device_data.get("ip_address", "")
+                    if ip_address and ip_address != "Unknown IP":
+                        return ip_address.replace(".", "_")
+                    else:
+                        # Fallback to MAC address without colons
+                        return self.mac_address.replace(':', '')
+
+            # Fallback to MAC address if no device data found
+            return self.mac_address.replace(':', '')
+
+        # For "combined" tracking method, use the detailed naming with AP/SSID
+        connected_router = self._host or "Unknown Router"
+                
         if device_data:
             # Use SSID instead of physical interface name
             ssid = device_data.get("ap_ssid", "Unknown SSID")

@@ -110,9 +110,13 @@ async def async_setup_entry(
         
         # Update availability for all existing buttons
         for button_id, button_entity in button_entities.items():
-            if hasattr(button_entity, 'async_write_ha_state'):
-                # Trigger availability update by writing state
-                button_entity.async_write_ha_state()
+            # Only update state if the entity has been fully initialized (hass is set)
+            if hasattr(button_entity, 'hass') and button_entity.hass is not None:
+                try:
+                    # Trigger availability update by writing state
+                    button_entity.async_write_ha_state()
+                except RuntimeError as exc:
+                    _LOGGER.debug("Could not update state for button %s: %s", button_id, exc)
         
         # Clean up tracking for completely disconnected devices
         disconnected_devices = created_buttons - current_devices
