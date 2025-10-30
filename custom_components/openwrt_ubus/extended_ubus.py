@@ -331,14 +331,14 @@ class ExtendedUbus(Ubus):
 
         # Handle different response formats from iwinfo
         if isinstance(result, list):
-            # Direct list format
+            # Direct list format - normalize MAC addresses to uppercase
             sta_devices.extend(
-                device["mac"] for device in result if isinstance(device, dict) and "mac" in device
+                device["mac"].upper() for device in result if isinstance(device, dict) and "mac" in device
             )
         elif isinstance(result, dict):
-            # Dictionary format with "results" key
+            # Dictionary format with "results" key - normalize MAC addresses to uppercase
             sta_devices.extend(
-                device["mac"] for device in result.get("results", [])
+                device["mac"].upper() for device in result.get("results", [])
                 if isinstance(device, dict) and "mac" in device
             )
         return sta_devices
@@ -364,7 +364,8 @@ class ExtendedUbus(Ubus):
         # iwinfo format - each device has detailed statistics
         for device in devices_list:
             if isinstance(device, dict) and "mac" in device:
-                mac = device["mac"]
+                # Normalize MAC address to uppercase for consistent lookups
+                mac = device["mac"].upper()
                 sta_statistics[mac] = device
             else:
                 _LOGGER.debug("Invalid device format: %s", device)

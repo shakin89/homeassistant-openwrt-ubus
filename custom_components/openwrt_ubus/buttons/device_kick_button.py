@@ -13,7 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.exceptions import HomeAssistantError
 
-from ..const import DOMAIN
+from ..const import DOMAIN, CONF_TRACKING_METHOD, DEFAULT_TRACKING_METHOD
 from ..shared_data_manager import SharedDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,6 +26,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up device kick buttons for OpenWrt."""
     _LOGGER.info("Setting up OpenWrt device kick buttons")
+    tracking_method = entry.data.get(CONF_TRACKING_METHOD, DEFAULT_TRACKING_METHOD)
     
     # Get shared data manager
     data_manager_key = f"data_manager_{entry.entry_id}"
@@ -56,52 +57,55 @@ async def async_setup_entry(
     def _async_add_kick_buttons():
         """Add kick buttons for connected devices and update availability."""
         _LOGGER.debug("Checking for devices to create kick buttons and update availability")
-        
+
         # Get current data
         hostapd_available = coordinator.data.get("hostapd_available", False)
         ap_info_data = coordinator.data.get("ap_info", {})
         device_statistics = coordinator.data.get("device_statistics", {})
-        
+
+        # Get host for unique ID generation
+        host = entry.data["host"]
+
         # Log current state for debugging
-        _LOGGER.debug("Hostapd available: %s, AP info available: %s, Device stats count: %d", 
+        _LOGGER.debug("Hostapd available: %s, AP info available: %s, Device stats count: %d",
                      hostapd_available, bool(ap_info_data), len(device_statistics))
-        
+
         new_buttons = []
         current_devices = set()
-        
+
         # Process each connected device (even if hostapd is not available, we still track them)
         for mac, device_info in device_statistics.items():
             if not isinstance(device_info, dict):
                 continue
-            
+
             ap_device = device_info.get("ap_device")
             if not ap_device:
                 continue
-            
-            # Create unique identifier for this device button
-            button_id = f"{ap_device}_{mac.replace(':', '_')}"
+
+            # Create unique identifier for this device button - use only host+mac (no AP)
+            # This allows the button to follow the device when it moves between APs
+            button_id = f"{host}_{mac.replace(':', '_')}"
             current_devices.add(button_id)
-            
+
+            # Get SSID for user-friendly naming
+            ap_ssid = device_info.get("ap_ssid", ap_device)
+
             # Create button if it doesn't exist (regardless of current availability)
             if button_id not in created_buttons:
-                # Create hostapd interface name
-                hostapd_interface = f"hostapd.{ap_device}"
-                
                 # Create new kick button
                 kick_button = DeviceKickButton(
                     coordinator=coordinator,
-                    ap_device=ap_device,
-                    hostapd_interface=hostapd_interface,
                     device_mac=mac,
                     device_name=device_info.get("hostname", f"Device {mac}"),
-                    unique_id=button_id
+                    unique_id=button_id,
+                    host=host
                 )
-                
+
                 new_buttons.append(kick_button)
                 created_buttons.add(button_id)
                 button_entities[button_id] = kick_button
-                _LOGGER.debug("Created kick button for device %s (%s) on AP %s", 
-                             device_info.get("hostname", mac), mac, ap_device)
+                _LOGGER.debug("Created kick button for device %s (%s) on AP %s (%s)",
+                             device_info.get("hostname", mac), mac, ap_ssid, ap_device)
         
         # Add new buttons if any
         if new_buttons:
@@ -140,43 +144,58 @@ async def async_setup_entry(
 
 class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEntity):
     """Button to kick a device from AP."""
-    
+
     _attr_device_class = ButtonDeviceClass.RESTART
     _attr_entity_category = EntityCategory.CONFIG
     _attr_has_entity_name = True
-    
+
     def __init__(
         self,
         coordinator: SharedDataUpdateCoordinator,
-        ap_device: str,
-        hostapd_interface: str,
         device_mac: str,
         device_name: str,
         unique_id: str,
+        host: str,
     ) -> None:
         """Initialize the kick button."""
         super().__init__(coordinator)
-        
-        self._ap_device = ap_device
-        self._hostapd_interface = hostapd_interface
+
         self._device_mac = device_mac
-        self._device_name = device_name
-        self._host = coordinator.data_manager.entry.data["host"]
+        self._initial_device_name = device_name
+        self._host = host
         self._previous_available_state = None  # Track availability changes
-        
-        if device_name == "Unknown" or device_name == "*":
-            self._attr_name = f"Kick {self._device_mac}"
-        else:
-            self._attr_name = f"Kick {device_name}"
+        self._previous_ap_info = None  # Track AP changes: (host, ap_device, ssid)
+
         self._attr_unique_id = f"{DOMAIN}_{unique_id}_kick"
-        
-        
-        # Device info - associate with the AP device
+
+    def _get_device_info(self) -> dict:
+        """Get current device info from coordinator data."""
+        device_statistics = self.coordinator.data.get("device_statistics", {})
+        return device_statistics.get(self._device_mac, {})
+
+    @property
+    def name(self) -> str:
+        """Return the name of the button using SSID."""
+        device_info = self._get_device_info()
+        device_name = device_info.get("hostname", self._initial_device_name)
+        ap_ssid = device_info.get("ap_ssid", "Unknown Network")
+
+        if device_name == "Unknown" or device_name == "*" or device_name == self._device_mac:
+            return f"Kick {self._device_mac} from {ap_ssid}"
+        else:
+            return f"Kick {device_name} from {ap_ssid}"
+
+    @property
+    def device_info(self):
+        """Return device info - associate with current AP device."""
         from homeassistant.helpers.device_registry import DeviceInfo
-        self._attr_device_info = DeviceInfo(
+        device_info = self._get_device_info()
+        ap_device = device_info.get("ap_device", "unknown")
+
+        return DeviceInfo(
             identifiers={(DOMAIN, f"{self._host}_ap_{ap_device}")},
         )
-    
+
     @property
     def available(self) -> bool:
         """Return if button is available."""
@@ -191,34 +210,46 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
                 current_state = False
             else:
                 # Check if device is still connected
-                device_statistics = self.coordinator.data.get("device_statistics", {})
-                device_info = device_statistics.get(self._device_mac, {})
-                
+                device_info = self._get_device_info()
                 is_connected = device_info.get("connected", False)
-                correct_ap = device_info.get("ap_device") == self._ap_device
-                
+                current_ap_device = device_info.get("ap_device")
+                current_ssid = device_info.get("ap_ssid", "Unknown")
+
                 if not is_connected:
                     _LOGGER.debug("Button %s: Device %s not connected", self._attr_unique_id, self._device_mac)
                     current_state = False
-                elif not correct_ap:
-                    _LOGGER.debug("Button %s: Device %s on wrong AP (expected: %s, actual: %s)", 
-                                 self._attr_unique_id, self._device_mac, self._ap_device, 
-                                 device_info.get("ap_device"))
+                elif not current_ap_device:
+                    _LOGGER.debug("Button %s: Device %s has no AP info", self._attr_unique_id, self._device_mac)
                     current_state = False
                 else:
-                    _LOGGER.debug("Button %s: Available - device %s connected on AP %s", 
-                                 self._attr_unique_id, self._device_mac, self._ap_device)
+                    # Track AP changes using router host + interface + SSID
+                    current_ap_info = (self._host, current_ap_device, current_ssid)
+                    _LOGGER.debug("Current_ap_info: %s %s %s", self._host, current_ap_device, current_ssid)
+
+                    if self._previous_ap_info and self._previous_ap_info != current_ap_info:
+                        prev_host, prev_device, prev_ssid = self._previous_ap_info
+                        _LOGGER.info(
+                            "Button %s: Device %s moved from %s/%s (%s) to %s/%s (%s)",
+                            self._attr_unique_id, self._device_mac,
+                            prev_host, prev_device, prev_ssid,
+                            self._host, current_ap_device, current_ssid
+                        )
+
+                    self._previous_ap_info = current_ap_info
+                    _LOGGER.debug("Button %s: Available - device %s connected on %s/%s (%s)",
+                                 self._attr_unique_id, self._device_mac,
+                                 self._host, current_ap_device, current_ssid)
                     current_state = True
-        
+
         # Log availability state changes
         if self._previous_available_state is not None and self._previous_available_state != current_state:
             if current_state:
-                _LOGGER.info("Button %s: Device %s became available (reconnected or hostapd restored)", 
+                _LOGGER.info("Button %s: Device %s became available (reconnected or hostapd restored)",
                            self._attr_unique_id, self._device_mac)
             else:
-                _LOGGER.info("Button %s: Device %s became unavailable (disconnected or hostapd down)", 
+                _LOGGER.info("Button %s: Device %s became unavailable (disconnected or hostapd down)",
                            self._attr_unique_id, self._device_mac)
-        
+
         self._previous_available_state = current_state
         return current_state
     
@@ -226,40 +257,60 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
     def icon(self) -> str:
         """Return the icon for the button."""
         return "mdi:wifi-cancel"
-    
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra state attributes."""
+        device_info = self._get_device_info()
+        ap_device = device_info.get("ap_device", "Unknown AP")
+        ap_ssid = device_info.get("ap_ssid", "Unknown Network")
+        hostname = device_info.get("hostname", self._initial_device_name)
+
         return {
             "device_mac": self._device_mac,
-            "device_name": self._device_name,
-            "ap_device": self._ap_device,
-            "hostapd_interface": self._hostapd_interface,
+            "device_name": hostname,
+            "router": self._host,
+            "ap_device": ap_device,
+            "ap_ssid": ap_ssid,
+            "hostapd_interface": f"hostapd.{ap_device}",
         }
     
     async def async_press(self) -> None:
         """Press the button to kick the device."""
         try:
-            _LOGGER.info("Kicking device %s (%s) from AP %s", 
-                        self._device_name, self._device_mac, self._ap_device)
-            
+            # Get current device info
+            device_info = self._get_device_info()
+            ap_device = device_info.get("ap_device")
+            ap_ssid = device_info.get("ap_ssid", ap_device)
+            hostname = device_info.get("hostname", self._initial_device_name)
+
+            if not ap_device:
+                raise HomeAssistantError(f"Cannot kick device {hostname}: no AP information available")
+
+            hostapd_interface = f"hostapd.{ap_device}"
+
+            _LOGGER.info("Kicking device %s (%s) from %s/%s (%s)",
+                        hostname, self._device_mac, self._host, ap_device, ap_ssid)
+
             # Get the ubus client
             ubus = await self.coordinator.data_manager.get_ubus_connection_async()
-            
+
             # Kick the device
             await ubus.kick_device(
-                hostapd_interface=self._hostapd_interface,
+                hostapd_interface=hostapd_interface,
                 mac_address=self._device_mac,
                 ban_time=60000,  # 60 seconds
                 reason=5  # Deauth reason
             )
-            
-            _LOGGER.info("Successfully kicked device %s from AP %s", 
-                        self._device_mac, self._ap_device)
-            
+
+            _LOGGER.info("Successfully kicked device %s from %s (%s)",
+                        self._device_mac, self._host, ap_ssid)
+
             # Refresh data to update device status
             await self.coordinator.async_request_refresh()
-            
+
         except Exception as exc:
+            device_info = self._get_device_info()
+            hostname = device_info.get("hostname", self._initial_device_name)
             _LOGGER.error("Failed to kick device %s: %s", self._device_mac, exc)
-            raise HomeAssistantError(f"Failed to kick device {self._device_name}: {exc}") from exc
+            raise HomeAssistantError(f"Failed to kick device {hostname}: {exc}") from exc

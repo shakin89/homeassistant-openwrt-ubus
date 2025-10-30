@@ -195,12 +195,20 @@ async def async_setup_entry(
         f"{DOMAIN}_tracker_{entry.data[CONF_HOST]}",
         SCAN_INTERVAL,
     )
-    
+
     # Store tracking attributes
     coordinator.known_devices = set()
     coordinator.async_add_entities = async_add_entities
     coordinator.mac2name = {}  # For storing DHCP mappings
     coordinator.tracking_method = tracking_method  # Store tracking method
+
+    # Store coordinator in hass.data for cross-router device tracking (only for uniqueid method)
+    if tracking_method == "uniqueid":
+        tracker_coordinators_key = "tracker_coordinators"
+        if tracker_coordinators_key not in hass.data[DOMAIN]:
+            hass.data[DOMAIN][tracker_coordinators_key] = {}
+        hass.data[DOMAIN][tracker_coordinators_key][entry.entry_id] = coordinator
+        _LOGGER.debug("Stored tracker coordinator for %s (tracking_method=uniqueid)", entry.data[CONF_HOST])
 
     # Initialize known_devices from existing entity registry entries
     await _restore_known_devices_from_registry(hass, entry, coordinator, tracking_method)
@@ -266,6 +274,12 @@ async def _restore_known_devices_from_registry(
     existing_entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
 
     for entity_entry in existing_entities:
+        # Skip deleted entities (entity_id is None for deleted entities)
+        # They should be recreated if device reconnects
+        if entity_entry.entity_id is None:
+            _LOGGER.debug("Skipping deleted entity with unique_id: %s", entity_entry.unique_id)
+            continue
+
         if entity_entry.domain == "device_tracker" and entity_entry.platform == DOMAIN:
             # Extract MAC address from unique_id based on tracking method
             if entity_entry.unique_id:
@@ -284,8 +298,10 @@ async def _restore_known_devices_from_registry(
                         )
                         continue
 
-                coordinator.known_devices.add(mac_address)
-                _LOGGER.debug("Restored known device from registry: %s", mac_address)
+                # Don't add to known_devices during restore - let the entity creation flow handle it
+                # This ensures entity objects are created for registry entities
+                # coordinator.known_devices.add(mac_address)
+                _LOGGER.debug("Found device in registry: %s (will create entity object during scan)", mac_address)
 
 
 async def _create_entities_for_devices(hass: HomeAssistant, entry: ConfigEntry, coordinator: SharedDataUpdateCoordinator, mac_addresses: set[str]) -> list:
@@ -306,20 +322,36 @@ async def _create_entities_for_devices(hass: HomeAssistant, entry: ConfigEntry, 
 
         # Generate unique_id based on tracking method
         unique_id = _generate_unique_id(host, mac_address, tracking_method)
-        existing_entity_id = entity_registry.async_get_entity_id(
-            "device_tracker", DOMAIN, unique_id
-        )
-        
+
+        # For uniqueid tracking, entity might be registered to ANY config entry
+        # So we need to search more broadly
+        existing_entity_id = None
+        if tracking_method == "uniqueid":
+            # Search for entity with this unique_id across all config entries
+            for entity_entry in entity_registry.entities.values():
+                if (entity_entry.domain == "device_tracker" and
+                    entity_entry.platform == DOMAIN and
+                    entity_entry.unique_id == unique_id and
+                    entity_entry.entity_id is not None):  # Not deleted
+                    existing_entity_id = entity_entry.entity_id
+                    _LOGGER.debug(
+                        "Found existing entity %s with unique_id %s (config_entry: %s)",
+                        existing_entity_id, unique_id, entity_entry.config_entry_id
+                    )
+                    break
+        else:
+            # For combined tracking, use normal lookup (should only exist in current config entry)
+            existing_entity_id = entity_registry.async_get_entity_id(
+                "device_tracker", DOMAIN, unique_id
+            )
+
         if existing_entity_id:
             _LOGGER.debug(
-                "Device tracker entity %s already exists with entity_id %s, adding to known devices",
-                unique_id, existing_entity_id
+                "Device tracker entity %s exists in registry, creating entity object to provide it",
+                unique_id
             )
-            # Add to known devices to prevent repeated checks
-            coordinator.known_devices.add(mac_address)
-            continue
-        
-        # Create device tracker entity for the new device
+
+        # Create device tracker entity (both for new and existing registry entries)
         try:
             entity = OpenwrtDeviceTracker(coordinator, mac_address)
             # Ensure the entity is enabled by default
@@ -351,6 +383,49 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
         self._attr_name = None  # Will be set dynamically
         self._attr_entity_registry_enabled_default = True  # Enable by default
 
+    def _get_device_data_from_any_coordinator(self) -> tuple[dict | None, str | None]:
+        """Get device data from any coordinator (for uniqueid tracking method).
+
+        Returns:
+            Tuple of (device_data, coordinator_host) or (None, None) if not found
+        """
+        # First try the local coordinator (most likely case)
+        device_stats = self.coordinator.data.get("device_statistics", {})
+        device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
+
+        if device_data and device_data.get("connected"):
+            return device_data, self._host
+
+        # If not found locally and tracking method is uniqueid, search in all coordinators
+        if self._tracking_method == "uniqueid":
+            tracker_coordinators_key = "tracker_coordinators"
+            all_coordinators = self.hass.data.get(DOMAIN, {}).get(tracker_coordinators_key, {})
+
+            for entry_id, other_coordinator in all_coordinators.items():
+                # Skip the coordinator we already checked
+                if other_coordinator == self.coordinator:
+                    continue
+
+                # Check if coordinator has data
+                if not other_coordinator.data:
+                    continue
+
+                # Look for device in this coordinator's data
+                other_stats = other_coordinator.data.get("device_statistics", {})
+                device_data = other_stats.get(self.mac_address) or other_stats.get(self.mac_address.upper())
+
+                if device_data and device_data.get("connected"):
+                    # Found on another router
+                    other_host = other_coordinator.data_manager.entry.data[CONF_HOST]
+                    _LOGGER.debug(
+                        "Device %s found on router %s (not on %s)",
+                        self.mac_address, other_host, self._host
+                    )
+                    return device_data, other_host
+
+        # Not found anywhere
+        return None, None
+
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info with updated device name."""
@@ -361,17 +436,25 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
             "model": "Network Device",
             "connections": {("mac", self.mac_address)},
         }
-        
-        # Only set via_device if we have a valid AP device (not "Unknown AP")
-        if self.ap_device != "Unknown AP":
+
+        # For uniqueid tracking, don't set via_device since device can roam between routers
+        # For combined tracking, set via_device to local AP
+        if self._tracking_method == "combined" and self.ap_device != "Unknown AP":
             device_info_dict["via_device"] = (DOMAIN, self.via_device)
-        
+
         return DeviceInfo(**device_info_dict)
 
     @property
     def ap_device(self) -> str:
         """Return the access point device this device is connected to."""
-        # Get device statistics from shared coordinator
+        # For uniqueid tracking, search across all routers
+        if self._tracking_method == "uniqueid":
+            device_data, _ = self._get_device_data_from_any_coordinator()
+            if device_data:
+                return device_data.get("ap_device", "Unknown AP")
+            return "Unknown AP"
+
+        # For combined tracking, only check local coordinator
         device_stats = self.coordinator.data.get("device_statistics", {})
         device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
         if device_data:
@@ -381,15 +464,26 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
     @property
     def via_device(self) -> str:
         """Return the via device info for this device."""
+        # For uniqueid tracking, use the host where device was found
+        if self._tracking_method == "uniqueid":
+            _, found_host = self._get_device_data_from_any_coordinator()
+            if found_host and self.ap_device != "Unknown AP":
+                return f"{found_host}_ap_{self.ap_device}"
+            return found_host if found_host else self._host
+
+        # For combined tracking, always use local host
         if self.ap_device != "Unknown AP":
             return f"{self._host}_ap_{self.ap_device}"
         return self._host
 
     def _get_device_name(self) -> str:
         """Get the device name from coordinator data or fallback to MAC."""
-        # Get device statistics from shared coordinator
-        device_stats = self.coordinator.data.get("device_statistics", {})
-        device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
+        # Get device data based on tracking method
+        if self._tracking_method == "uniqueid":
+            device_data, _ = self._get_device_data_from_any_coordinator()
+        else:
+            device_stats = self.coordinator.data.get("device_statistics", {})
+            device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
 
         # If tracking method is "uniqueid", use simple naming without AP/SSID info
         if self._tracking_method == "uniqueid":
@@ -457,15 +551,33 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
     @property
     def is_connected(self) -> bool:
         """Return true if the device is connected to the network."""
-        # Get device statistics from shared coordinator
+        # For uniqueid tracking, search across all routers
+        if self._tracking_method == "uniqueid":
+            device_data, found_host = self._get_device_data_from_any_coordinator()
+
+            if device_data:
+                connected = device_data.get("connected", False)
+                if found_host and found_host != self._host:
+                    _LOGGER.debug(
+                        "Device %s connection status: %s (on router %s, not %s)",
+                        self.mac_address, connected, found_host, self._host
+                    )
+                else:
+                    _LOGGER.debug("Device %s connection status: %s", self.mac_address, connected)
+                return connected
+
+            _LOGGER.debug("Device %s not found in any device statistics, assuming disconnected", self.mac_address)
+            return False
+
+        # For combined tracking, only check local coordinator
         device_stats = self.coordinator.data.get("device_statistics", {})
         device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
-        
+
         if device_data:
             connected = device_data.get("connected", False)
             _LOGGER.debug("Device %s connection status: %s", self.mac_address, connected)
             return connected
-        
+
         _LOGGER.debug("Device %s not found in device statistics, assuming disconnected", self.mac_address)
         return False
 
@@ -477,24 +589,33 @@ class OpenwrtDeviceTracker(CoordinatorEntity, ScannerEntity):
     @property
     def extra_state_attributes(self) -> dict[str, str]:
         """Return the device state attributes."""
+        # Get device data based on tracking method
+        if self._tracking_method == "uniqueid":
+            device_data, found_host = self._get_device_data_from_any_coordinator()
+            # Use found_host for router attribute to show where device is actually connected
+            current_router = found_host if found_host else self._host
+        else:
+            device_stats = self.coordinator.data.get("device_statistics", {})
+            device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
+            current_router = self._host
+
         attributes = {
-            "host": self._host,
+            "host": self._host,  # Keep original host for reference
             "mac": self.mac_address,
         }
 
-        # Get device statistics from shared coordinator
-        device_stats = self.coordinator.data.get("device_statistics", {})
-        device_data = device_stats.get(self.mac_address) or device_stats.get(self.mac_address.upper())
-        
         if device_data:
             attributes.update({
                 "name": self._get_device_name(),
                 "ap_device": device_data.get("ap_device", "Unknown AP"),
                 "hostname": device_data.get("hostname", self.mac_address),
                 "connection_type": "wireless",
-                "router": self._host,
+                "router": current_router,  # Show router where device is currently connected
                 "ip_address": device_data.get("ip_address", "Unknown IP"),
             })
+            # Add SSID if available
+            if "ap_ssid" in device_data:
+                attributes["ssid"] = device_data.get("ap_ssid", "Unknown SSID")
         else:
             attributes.update({
                 "last_seen": "disconnected",
