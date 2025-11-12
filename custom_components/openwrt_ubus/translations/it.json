@@ -9,7 +9,8 @@
           "username": "Utente",
           "password": "Password",
           "wireless_software": "Software Wireless",
-          "dhcp_software": "Software DHCP"
+          "dhcp_software": "Software DHCP",
+          "tracking_method": "Metodo di tracciamento"
         }
       },
       "sensors": {
@@ -66,13 +67,16 @@
           "enable_qmodem_sensors": "Abilita Sensori QModem",
           "enable_sta_sensors": "Abilita Sensori Dispositivi Client",
           "enable_ap_sensors": "Abilita Sensori Access Point",
+          "enable_eth_sensors": "Abilita Sensori Interaccie Ethernet",
           "enable_service_controls": "Abilita Controlli Servizi",
+          "enable_device_kick_buttons": "Abilita device kick",
           "selected_services": "Servizi da Controllare",
           "refresh_services": "Aggiorna Lista Servizi",
           "system_sensor_timeout": "Intervallo di aggiornamento Sensori di Sistema (secondi)",
           "qmodem_sensor_timeout": "Intervallo di aggiornamento Sensori QModem (secondi)",
           "sta_sensor_timeout": "Intervallo di aggiornamento Sensori Dispositivi Client (secondi)",
-          "ap_sensor_timeout": "Intervallo di aggiornamento Sensori Access Point (secondi)"
+          "ap_sensor_timeout": "Intervallo di aggiornamento Sensori Access Point (secondi)",
+          "tracking_method": "Metodo di tracciamento"
         },
         "data_description": {
           "wireless_software": "Software utilizzato per ottenere informazioni wireless (iwinfo o hostapd)",
@@ -81,10 +85,12 @@
           "enable_qmodem_sensors": "Monitora le informazioni del modem cellulare (se disponibile)",
           "enable_sta_sensors": "Monitora i dispositivi WiFi connessi e le loro statistiche",
           "enable_ap_sensors": "Monitora le informazioni dell'interfaccia Access Point (dettagli rete WiFi)",
+          "enable_device_kick_buttons": "Abilita i pulsanti per la disconnessione dei dispositivi (richiede hostapd)",
           "system_sensor_timeout": "Frequenza di aggiornamento dei dati dei sensori di sistema (10-300 secondi)",
           "qmodem_sensor_timeout": "Frequenza di aggiornamento dei dati dei sensori modem (30-600 secondi)",
           "sta_sensor_timeout": "Frequenza di aggiornamento dei dati dei dispositivi client (10-300 secondi)",
-          "ap_sensor_timeout": "Frequenza di aggiornamento dei dati dell'Access Point (30-600 secondi)"
+          "ap_sensor_timeout": "Frequenza di aggiornamento dei dati dell'Access Point (30-600 secondi)",
+          "tracking_method": "Uniqueid -> metodo di tracciamento con mac univoco per tutti i router; combined -> ap+mac quando il dispositvo cambia ap cambia anche l'entità di Home Assistant"
         }
       }
     }

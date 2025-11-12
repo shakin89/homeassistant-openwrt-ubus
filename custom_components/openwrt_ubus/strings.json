@@ -9,7 +9,8 @@
           "username": "Username",
           "password": "Password",
           "wireless_software": "Wireless Software",
-          "dhcp_software": "DHCP Software"
+          "dhcp_software": "DHCP Software",
+          "tracking_method": "Tracking Method"
         }
       },
       "sensors": {
@@ -66,7 +67,8 @@
           "enable_sta_sensors": "Enable Station (WiFi Device) Sensors",
           "system_sensor_timeout": "System Sensor Update Interval (seconds)",
           "qmodem_sensor_timeout": "QModem Sensor Update Interval (seconds)",
-          "sta_sensor_timeout": "Station Sensor Update Interval (seconds)"
+          "sta_sensor_timeout": "Station Sensor Update Interval (seconds)",
+          "tracking_method": "Tracking method"
         }
       },
       "sensors": {
