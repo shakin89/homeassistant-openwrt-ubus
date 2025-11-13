@@ -33,6 +33,8 @@ from ..const import (
     DOMAIN,
     CONF_STA_SENSOR_TIMEOUT,
     DEFAULT_STA_SENSOR_TIMEOUT,
+    CONF_TRACKING_METHOD,
+    DEFAULT_TRACKING_METHOD,
 )
 from ..shared_data_manager import SharedDataUpdateCoordinator
 
@@ -331,6 +333,85 @@ SENSOR_DESCRIPTIONS = [
 ]
 
 
+async def _migrate_sta_sensor_unique_ids(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    tracking_method: str,
+) -> None:
+    """Migrate STA sensor unique_ids to remove host prefix for uniqueid tracking.
+
+    For uniqueid tracking method, sensors should have unique_ids without host prefix
+    to allow devices to roam between APs without creating duplicate sensors.
+    """
+    if tracking_method != "uniqueid":
+        return  # Migration only needed for uniqueid tracking
+
+    entity_registry = er.async_get(hass)
+    host = entry.data[CONF_HOST]
+
+    _LOGGER.info(
+        "Migrating STA sensor unique_ids for %s (tracking_method=uniqueid)",
+        host
+    )
+
+    # Get all sensor entities for this config entry
+    existing_entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+    migrated_count = 0
+
+    for entity_entry in existing_entities:
+        if entity_entry.domain != "sensor" or entity_entry.platform != DOMAIN:
+            continue
+
+        old_unique_id = entity_entry.unique_id
+
+        # Check if this is a STA sensor with host prefix
+        # Format: "{host}_sensor_{mac_address}_{sensor_key}"
+        if not old_unique_id or "_sensor_" not in old_unique_id:
+            continue
+
+        # Extract the part after first "_sensor_"
+        parts = old_unique_id.split("_sensor_", 1)
+        if len(parts) != 2:
+            continue
+
+        # New format: "sensor_{mac_address}_{sensor_key}"
+        new_unique_id = f"sensor_{parts[1]}"
+
+        if old_unique_id == new_unique_id:
+            continue
+
+        # Check if new unique_id already exists (could be from another AP entry)
+        existing_entity_id = entity_registry.async_get_entity_id(
+            "sensor", DOMAIN, new_unique_id
+        )
+
+        if existing_entity_id and existing_entity_id != entity_entry.entity_id:
+            _LOGGER.warning(
+                "Cannot migrate %s to %s: new unique_id already exists for entity %s",
+                old_unique_id, new_unique_id, existing_entity_id
+            )
+            continue
+
+        # Perform migration
+        try:
+            entity_registry.async_update_entity(
+                entity_entry.entity_id,
+                new_unique_id=new_unique_id
+            )
+            migrated_count += 1
+            _LOGGER.debug(
+                "Migrated sensor entity %s: %s → %s",
+                entity_entry.entity_id, old_unique_id, new_unique_id
+            )
+        except Exception as exc:
+            _LOGGER.error(
+                "Failed to migrate sensor entity %s from %s to %s: %s",
+                entity_entry.entity_id, old_unique_id, new_unique_id, exc
+            )
+
+    _LOGGER.info("STA sensor migration completed: %d entities migrated", migrated_count)
+
+
 async def async_setup_entry(
         hass: HomeAssistant,
         entry: ConfigEntry,
@@ -349,6 +430,12 @@ async def async_setup_entry(
     )
     scan_interval = timedelta(seconds=timeout)
 
+    # Get tracking method from configuration
+    tracking_method = entry.data.get(CONF_TRACKING_METHOD, DEFAULT_TRACKING_METHOD)
+
+    # Migrate sensor unique_ids if needed
+    await _migrate_sta_sensor_unique_ids(hass, entry, tracking_method)
+
     # Create coordinator using shared data manager
     coordinator = SharedDataUpdateCoordinator(
         hass,
@@ -361,6 +448,7 @@ async def async_setup_entry(
     # Store known devices for dynamic entity creation
     coordinator.known_devices = set()
     coordinator.async_add_entities = async_add_entities
+    coordinator.tracking_method = tracking_method
 
     # Add update listener for dynamic device creation
     async def _handle_coordinator_update_async():
@@ -476,8 +564,16 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
         self.entity_description = description
         self._mac_address = mac_address
         self._host = coordinator.data_manager.entry.data[CONF_HOST]
+        self._tracking_method = coordinator.tracking_method
+
         # Use sensor-specific unique ID pattern to avoid collision with device tracker
-        self._attr_unique_id = f"{self._host}_sensor_{mac_address}_{description.key}"
+        # For uniqueid tracking, don't include host to allow roaming between APs
+        # For combined tracking, include host to keep sensors per AP
+        if self._tracking_method == "uniqueid":
+            self._attr_unique_id = f"sensor_{mac_address}_{description.key}"
+        else:
+            self._attr_unique_id = f"{self._host}_sensor_{mac_address}_{description.key}"
+
         self._attr_has_entity_name = True
 
         # Store previous data for speed calculations
@@ -495,14 +591,21 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
         ap_device = "Unknown AP"
         if device_data := self._device_data():
             ap_device = device_data.get("ap_device", "Unknown AP")
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._mac_address)},
-            name=self._get_device_name(),
-            manufacturer="Unknown",
-            model="WiFi Device",
-            connections={("mac", self._mac_address)},
-            via_device=(DOMAIN, f"{self._host}_ap_{ap_device}"),
-        )
+
+        device_info_dict = {
+            "identifiers": {(DOMAIN, self._mac_address)},
+            "name": self._get_device_name(),
+            "manufacturer": "Unknown",
+            "model": "WiFi Device",
+            "connections": {("mac", self._mac_address)},
+        }
+
+        # For uniqueid tracking, don't set via_device since device can roam between APs
+        # For combined tracking, set via_device to local AP
+        if self._tracking_method == "combined" and ap_device != "Unknown AP":
+            device_info_dict["via_device"] = (DOMAIN, f"{self._host}_ap_{ap_device}")
+
+        return DeviceInfo(**device_info_dict)
 
     def _get_device_name(self) -> str:
         """Get the device name from coordinator data or fallback to MAC."""
