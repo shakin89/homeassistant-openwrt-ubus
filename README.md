@@ -159,6 +159,43 @@ EOF
 # Restart services to apply changes
 /etc/init.d/rpcd restart && /etc/init.d/uhttpd restart
 ```
+#### For advanced users
+If you want to use a different user from root or have more fine grained control over root access over ubus, substitute "root.json" with "youruser.json" in the line below and inside json:
+```bash
+# Create ACL file for Home Assistant
+cat > /usr/share/rpcd/acl.d/root.json << 'EOF'
+{
+  "root": {
+    "description": "Home Assistant access",
+    "read": {
+      "ubus": {
+        "session": [ "access", "login" ],
+        "system": [ "board", "info" ],
+        "iwinfo": [ "devices", "info", "assoclist" ],
+        "hostapd.*": [ "*" ],
+        "network.interface": [ "dump" ],
+        "network.device": [ "status" ],
+        "network.wireless": [ "status" ],
+        "dhcp": [ "ipv4leases", "ipv6leases" ],
+        "file": [ "read" ],
+        "uci": [ "get" ],
+        "rc": [ "list", "init" ]
+      },
+      "file": {
+        "/etc/ethers": [ "read" ],
+        "/tmp/dhcp.leases": [ "read" ],
+        "/var/dhcp.leases": [ "read" ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "hostapd.*": [ "del_client" ],
+        "rc": [ "init" ]
+      }
+    }
+  }
+}
+```
 
 > **Important**: Without ACL configuration, device names may appear as MAC addresses instead of hostnames.
 
@@ -178,7 +215,8 @@ EOF
 | 👤 **Username** | Login username | - | Usually 'root' |
 | 🔑 **Password** | Login password | - | Router admin password |
 | 📡 **Wireless Software** | Wireless monitoring method | iwinfo | iwinfo, hostapd, none |
-| 🌐 **DHCP Software** | DHCP client detection | dnsmasq | dnsmasq, odhcpd, none |
+| 🌐 **DHCP Software** | DHCP client detection | dnsmasq | dnsmasq, odhcpd, /etc/ethers, none |
+| 🚫 **Device Tracking Method** | Choose between tracking methods | combined | combined/uniqueid |
 | ⏱️ **System Timeout** | System data fetch timeout | 30s | 5s-300s |
 | 📊 **QModem Timeout** | QModem data fetch timeout | 30s | 5s-300s |
 | ⚙️ **Service Timeout** | Service control timeout | 30s | 5s-300s |
@@ -192,6 +230,69 @@ The integration provides comprehensive device tracking and management for all de
 
 ![Device Tracking](imgs/sta_info_devicetracker.png)
 *Device tracker entities showing connected wireless devices with real-time status*
+
+#### Device Tracking Methods
+
+The integration offers two distinct tracking methods to accommodate different network topologies and use cases:
+
+##### **`combined` - Per-AP Device Tracking (Default)**
+This method creates separate entities for each device on each access point, treating each AP as an independent network.
+
+**Characteristics:**
+- **Separate Entities**: A device moving between APs creates distinct entities (e.g., `device_tracker.phone_ap1`, `device_tracker.phone_ap2`)
+- **Entity Naming**: Includes AP hostname in entity ID (e.g., `ap-kitchen_sensor_mac_signal_avg`)
+- **Device Hierarchy**: Devices appear as children of their current AP in the device registry (via `via_device`)
+- **Best For**:
+  - Independent access points with separate SSIDs
+  - Networks where device location per AP is important
+  - Tracking which specific AP a device is connected to
+  - Scenarios requiring separate automations per AP
+
+**Example Use Case:**
+You have multiple APs (Guest Network, Office Network, IoT Network) and want to track if a device is on the office network vs. guest network with separate presence entities.
+
+##### **`uniqueid` - Cross-AP Device Roaming**
+This method creates a single entity per device that follows the device across all APs, ideal for mesh networks and roaming scenarios.
+
+**Characteristics:**
+- **Single Entity**: One entity per device regardless of connected AP (e.g., `device_tracker.phone`)
+- **Entity Naming**: Excludes AP hostname, using only device identifier (e.g., `sensor_mac_signal_avg`)
+- **Dynamic Attributes**: Current AP information exposed through attributes:
+  - `router_host`: Current access point hostname (updates dynamically)
+  - `ap_device`: Current AP device identifier
+  - `ap_ssid`: Current connected SSID network name
+- **No Device Hierarchy**: Devices are not linked to specific APs (no `via_device`), representing network-wide presence
+- **Best For**:
+  - Mesh networks where devices roam between APs
+  - Single logical network across multiple physical APs
+  - Scenarios where you care about presence, not AP location
+  - Reducing entity clutter in multi-AP setups
+
+**Example Use Case:**
+You have a mesh network with 3 APs covering your home. You want a single presence sensor for your phone that shows "home" regardless of which AP it connects to, with the current AP available in sensor attributes.
+
+##### Comparison Table
+
+| Feature | `combined` | `uniqueid` |
+|---------|-----------|-----------|
+| **Entities per device** | Multiple (one per AP) | Single (network-wide) |
+| **Entity ID format** | `ap-name_sensor_mac_attribute` | `sensor_mac_attribute` |
+| **Roaming behavior** | Creates new entity on each AP | Updates attributes dynamically |
+| **Device hierarchy** | Child of current AP | Independent device |
+| **Current AP info** | Part of entity ID | Dynamic attribute |
+| **Use case** | Per-AP tracking | Network-wide presence |
+
+##### Migration & Entity Management
+
+When switching between tracking methods or setting up for the first time:
+
+1. **Automatic Migration**: The integration includes built-in migration functions that automatically update entity `unique_id` formats
+2. **Clean Setup**: For best results with `uniqueid` method on existing installations:
+   - Stop Home Assistant
+   - Run cleanup script: `python3 cleanup_openwrt_buttons.py`
+   - Restart Home Assistant
+   - Entities will be recreated with correct format
+3. **Entity Persistence**: Once created, entity IDs remain stable even when devices roam (with `uniqueid` method)
 
 #### Wireless Device Detection
 - **iwinfo Method**: Uses OpenWrt's iwinfo to detect wireless clients with system-level monitoring

@@ -450,6 +450,14 @@ async def async_setup_entry(
     coordinator.async_add_entities = async_add_entities
     coordinator.tracking_method = tracking_method
 
+    # Store coordinator in hass.data for cross-router device tracking (only for uniqueid method)
+    if tracking_method == "uniqueid":
+        sta_coordinators_key = "sta_sensor_coordinators"
+        if sta_coordinators_key not in hass.data[DOMAIN]:
+            hass.data[DOMAIN][sta_coordinators_key] = {}
+        hass.data[DOMAIN][sta_coordinators_key][entry.entry_id] = coordinator
+        _LOGGER.debug("Stored STA sensor coordinator for %s (tracking_method=uniqueid)", entry.data[CONF_HOST])
+
     # Add update listener for dynamic device creation
     async def _handle_coordinator_update_async():
         """Handle coordinator updates and create new entities for new devices."""
@@ -582,8 +590,73 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
         self._previous_update_time = None
 
     def _device_data(self) -> dict[str, Any] | None:
+        """Get device data, searching all coordinators for uniqueid tracking."""
         device_stats = self.coordinator.data.get("device_statistics", {})
-        return device_stats.get(self._mac_address) or device_stats.get(self._mac_address.upper())
+        device_data = device_stats.get(self._mac_address) or device_stats.get(self._mac_address.upper())
+
+        # For combined tracking or if found locally, return immediately
+        if self._tracking_method == "combined" or device_data:
+            return device_data
+
+        # For uniqueid tracking, search in all coordinators if not found locally
+        if self._tracking_method == "uniqueid":
+            sta_coordinators_key = "sta_sensor_coordinators"
+            all_coordinators = self.hass.data.get(DOMAIN, {}).get(sta_coordinators_key, {})
+
+            for entry_id, other_coordinator in all_coordinators.items():
+                # Skip the coordinator we already checked
+                if other_coordinator == self.coordinator:
+                    continue
+
+                # Check if coordinator has data
+                if not other_coordinator.data:
+                    continue
+
+                # Look for device in this coordinator's data
+                other_stats = other_coordinator.data.get("device_statistics", {})
+                device_data = other_stats.get(self._mac_address) or other_stats.get(self._mac_address.upper())
+
+                if device_data:
+                    return device_data
+
+        return None
+
+    def _get_device_data_with_host(self) -> tuple[dict | None, str | None]:
+        """Get device data and the host where it was found.
+
+        Returns:
+            Tuple of (device_data, host) where device was found, or (None, None) if not found.
+        """
+        device_stats = self.coordinator.data.get("device_statistics", {})
+        device_data = device_stats.get(self._mac_address) or device_stats.get(self._mac_address.upper())
+
+        # For combined tracking or if found locally, return immediately
+        if self._tracking_method == "combined" or device_data:
+            return device_data, self._host
+
+        # For uniqueid tracking, search in all coordinators if not found locally
+        if self._tracking_method == "uniqueid":
+            sta_coordinators_key = "sta_sensor_coordinators"
+            all_coordinators = self.hass.data.get(DOMAIN, {}).get(sta_coordinators_key, {})
+
+            for entry_id, other_coordinator in all_coordinators.items():
+                # Skip the coordinator we already checked
+                if other_coordinator == self.coordinator:
+                    continue
+
+                # Check if coordinator has data
+                if not other_coordinator.data:
+                    continue
+
+                # Look for device in this coordinator's data
+                other_stats = other_coordinator.data.get("device_statistics", {})
+                device_data = other_stats.get(self._mac_address) or other_stats.get(self._mac_address.upper())
+
+                if device_data:
+                    other_host = other_coordinator.data_manager.entry.data[CONF_HOST]
+                    return device_data, other_host
+
+        return None, None
 
     @property
     def device_info(self) -> DeviceInfo | None:
@@ -676,15 +749,20 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return the state attributes."""
-        device_data = self._device_data()
+        # Get device data with current host (for uniqueid tracking, this searches all coordinators)
+        device_data, current_host = self._get_device_data_with_host()
         if device_data is None:
             return {}
 
+        # Use the host where device was actually found (dynamic for uniqueid tracking)
+        router_host = current_host if current_host else self._host
+
         attributes = {
             "mac_address": self._mac_address,
-            "router_host": self._host,
+            "router": router_host,
             "last_update": self.coordinator.last_update_success,
             "ap_device": device_data.get("ap_device", "Unknown AP"),
+            "ap_ssid": device_data.get("ap_ssid", "Unknown SSID"),
         }
 
         # Add extra attributes using mapping

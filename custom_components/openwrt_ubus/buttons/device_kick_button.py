@@ -11,12 +11,109 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers import entity_registry as er
 from homeassistant.exceptions import HomeAssistantError
 
 from ..const import DOMAIN, CONF_TRACKING_METHOD, DEFAULT_TRACKING_METHOD
 from ..shared_data_manager import SharedDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def _migrate_kick_button_unique_ids(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    tracking_method: str,
+) -> None:
+    """Migrate kick button unique_ids to remove host prefix for uniqueid tracking.
+
+    For uniqueid tracking method, buttons should have unique_ids without host prefix
+    to allow devices to roam between APs without creating duplicate buttons.
+    """
+    if tracking_method != "uniqueid":
+        return  # Migration only needed for uniqueid tracking
+
+    entity_registry = er.async_get(hass)
+    host = entry.data["host"]
+
+    _LOGGER.info(
+        "Migrating kick button unique_ids for %s (tracking_method=uniqueid)",
+        host
+    )
+
+    # Get all button entities for this config entry
+    existing_entities = er.async_entries_for_config_entry(entity_registry, entry.entry_id)
+    migrated_count = 0
+
+    for entity_entry in existing_entities:
+        if entity_entry.domain != "button" or entity_entry.platform != DOMAIN:
+            continue
+
+        old_unique_id = entity_entry.unique_id
+
+        # Check if this is a kick button with host prefix
+        # Format: "openwrt_ubus_{host}_{mac}_kick"
+        if not old_unique_id or not old_unique_id.endswith("_kick"):
+            continue
+
+        # Extract MAC from old unique_id
+        # Remove "openwrt_ubus_" prefix and "_kick" suffix
+        if not old_unique_id.startswith(f"{DOMAIN}_"):
+            continue
+
+        without_prefix = old_unique_id[len(f"{DOMAIN}_"):]
+        if not without_prefix.endswith("_kick"):
+            continue
+
+        without_suffix = without_prefix[:-5]  # Remove "_kick"
+
+        # Check if it contains host prefix
+        # Format should be: {host}_{mac_with_underscores}
+        # Try to extract MAC (last part after removing potential host)
+        parts = without_suffix.split("_")
+        if len(parts) < 6:  # MAC has at least 6 parts when using underscores
+            continue
+
+        # Assume last 6 parts are MAC address
+        mac_parts = parts[-6:]
+        mac_address = "_".join(mac_parts)
+
+        # New format: "openwrt_ubus_{mac}_kick"
+        new_unique_id = f"{DOMAIN}_{mac_address}_kick"
+
+        if old_unique_id == new_unique_id:
+            continue
+
+        # Check if new unique_id already exists (could be from another AP entry)
+        existing_entity_id = entity_registry.async_get_entity_id(
+            "button", DOMAIN, new_unique_id
+        )
+
+        if existing_entity_id and existing_entity_id != entity_entry.entity_id:
+            _LOGGER.warning(
+                "Cannot migrate %s to %s: new unique_id already exists for entity %s",
+                old_unique_id, new_unique_id, existing_entity_id
+            )
+            continue
+
+        # Perform migration
+        try:
+            entity_registry.async_update_entity(
+                entity_entry.entity_id,
+                new_unique_id=new_unique_id
+            )
+            migrated_count += 1
+            _LOGGER.debug(
+                "Migrated button entity %s: %s → %s",
+                entity_entry.entity_id, old_unique_id, new_unique_id
+            )
+        except Exception as exc:
+            _LOGGER.error(
+                "Failed to migrate button entity %s from %s to %s: %s",
+                entity_entry.entity_id, old_unique_id, new_unique_id, exc
+            )
+
+    _LOGGER.info("Kick button migration completed: %d entities migrated", migrated_count)
 
 
 async def async_setup_entry(
@@ -27,7 +124,10 @@ async def async_setup_entry(
     """Set up device kick buttons for OpenWrt."""
     _LOGGER.info("Setting up OpenWrt device kick buttons")
     tracking_method = entry.data.get(CONF_TRACKING_METHOD, DEFAULT_TRACKING_METHOD)
-    
+
+    # Migrate button unique_ids if needed
+    await _migrate_kick_button_unique_ids(hass, entry, tracking_method)
+
     # Get shared data manager
     data_manager_key = f"data_manager_{entry.entry_id}"
     data_manager = hass.data[DOMAIN][data_manager_key]
@@ -82,9 +182,13 @@ async def async_setup_entry(
             if not ap_device:
                 continue
 
-            # Create unique identifier for this device button - use only host+mac (no AP)
-            # This allows the button to follow the device when it moves between APs
-            button_id = f"{host}_{mac.replace(':', '_')}"
+            # Create unique identifier for this device button
+            # For uniqueid tracking: use only MAC to allow device roaming between APs
+            # For combined tracking: use host+MAC to keep separate buttons per router
+            if tracking_method == "uniqueid":
+                button_id = mac.replace(':', '_')
+            else:
+                button_id = f"{host}_{mac.replace(':', '_')}"
             current_devices.add(button_id)
 
             # Get SSID for user-friendly naming
@@ -98,7 +202,8 @@ async def async_setup_entry(
                     device_mac=mac,
                     device_name=device_info.get("hostname", f"Device {mac}"),
                     unique_id=button_id,
-                    host=host
+                    host=host,
+                    tracking_method=tracking_method
                 )
 
                 new_buttons.append(kick_button)
@@ -156,6 +261,7 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
         device_name: str,
         unique_id: str,
         host: str,
+        tracking_method: str = DEFAULT_TRACKING_METHOD,
     ) -> None:
         """Initialize the kick button."""
         super().__init__(coordinator)
@@ -163,6 +269,7 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
         self._device_mac = device_mac
         self._initial_device_name = device_name
         self._host = host
+        self._tracking_method = tracking_method
         self._previous_available_state = None  # Track availability changes
         self._previous_ap_info = None  # Track AP changes: (host, ap_device, ssid)
 
@@ -174,6 +281,39 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
         return device_statistics.get(self._device_mac, {})
 
     @property
+    def suggested_object_id(self) -> str:
+        """Return suggested entity_id for the button.
+
+        Automatically adapts based on has_entity_name setting:
+        - If has_entity_name=True: Returns only suffix (HA adds device name automatically)
+        - If has_entity_name=False: Returns full name including device name
+        """
+        if self._tracking_method == "uniqueid":
+            # Get AP hostname (without domain)
+            ap_host = self._host.split(".")[0].replace("-", "_").replace(" ", "_").lower()
+
+            # Check if has_entity_name is enabled
+            if getattr(self, '_attr_has_entity_name', False):
+                # Home Assistant will add device name automatically, so we only provide the suffix
+                return f"kick_from_{ap_host}"
+            else:
+                # We need to include the device name ourselves
+                device_info = self._get_device_info()
+                device_name = device_info.get("hostname", self._initial_device_name)
+
+                # Clean device name for entity_id (remove special chars, use lowercase)
+                if device_name == "Unknown" or device_name == "*" or device_name == self._device_mac:
+                    clean_name = self._device_mac.replace(":", "_").lower()
+                else:
+                    # Remove domain suffix if present and clean
+                    clean_name = device_name.split(".")[0].replace("-", "_").replace(" ", "_").lower()
+
+                return f"{clean_name}_kick_from_{ap_host}"
+        else:
+            # For combined: use default behavior
+            return None
+
+    @property
     def name(self) -> str:
         """Return the name of the button using SSID."""
         device_info = self._get_device_info()
@@ -183,18 +323,27 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
         if device_name == "Unknown" or device_name == "*" or device_name == self._device_mac:
             return f"Kick {self._device_mac} from {ap_ssid}"
         else:
-            return f"Kick {device_name} from {ap_ssid}"
+            return f"Kick {device_name.split(".")[0].replace("-", "_").replace(" ", "_").lower()} from {ap_ssid}"
 
     @property
     def device_info(self):
-        """Return device info - associate with current AP device."""
+        """Return device info - associate with the mobile device, not the AP."""
         from homeassistant.helpers.device_registry import DeviceInfo
         device_info = self._get_device_info()
         ap_device = device_info.get("ap_device", "unknown")
 
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"{self._host}_ap_{ap_device}")},
-        )
+        # Associate button with the mobile device (using MAC as identifier)
+        device_info_dict = {
+            "identifiers": {(DOMAIN, self._device_mac)},
+            "connections": {("mac", self._device_mac)},
+        }
+
+        # For uniqueid tracking, don't set via_device since device can roam between APs
+        # For combined tracking, set via_device to local AP
+        if self._tracking_method == "combined" and ap_device != "unknown":
+            device_info_dict["via_device"] = (DOMAIN, f"{self._host}_ap_{ap_device}")
+
+        return DeviceInfo(**device_info_dict)
 
     @property
     def available(self) -> bool:
