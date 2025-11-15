@@ -258,7 +258,7 @@ This method creates a single entity per device that follows the device across al
 - **Single Entity**: One entity per device regardless of connected AP (e.g., `device_tracker.phone`)
 - **Entity Naming**: Excludes AP hostname, using only device identifier (e.g., `sensor_mac_signal_avg`)
 - **Dynamic Attributes**: Current AP information exposed through attributes:
-  - `router_host`: Current access point hostname (updates dynamically)
+  - `router`: Current access point hostname (updates dynamically)
   - `ap_device`: Current AP device identifier
   - `ap_ssid`: Current connected SSID network name
 - **No Device Hierarchy**: Devices are not linked to specific APs (no `via_device`), representing network-wide presence
