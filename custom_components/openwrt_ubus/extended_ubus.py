@@ -31,6 +31,8 @@ from .const import (
     API_METHOD_DEL_CLIENT,
     API_METHOD_LIST,
     API_METHOD_INIT,
+    API_METHOD_SET,
+    API_METHOD_COMMIT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -254,6 +256,61 @@ class ExtendedUbus(Ubus):
                 API_PARAM_CONFIG: _config,
                 API_PARAM_TYPE: _type,
             },
+        )
+
+    async def uci_get_option(self, config: str, section: str | None = None, option: str | None = None):
+        """Get a specific UCI option value."""
+        params: dict = {API_PARAM_CONFIG: config}
+        if section is not None:
+            params["section"] = section
+        if option is not None:
+            params["option"] = option
+        return await self.api_call(
+            API_RPC_CALL,
+            API_SUBSYS_UCI,
+            API_METHOD_GET,
+            params,
+        )
+
+    async def uci_set_option(self, config: str, section: str, option: str, value):
+        """Set a specific UCI option value.
+
+        Args:
+            config: UCI config name (e.g., "firewall")
+            section: Section name or type/index
+            option: Option key to set
+            value: Option value - may be a string or list of strings for UCI list-type options.
+                   Lists are passed through as JSON arrays to ubus.
+
+        Note:
+            Call `uci_commit_config()` after calling this method to write changes to disk.
+            Consider calling `service_action()` to restart affected services (e.g., restart
+            "dnsmasq" after changing DHCP configuration, or "network" after interface changes).
+        """
+        params = {
+            "config": config,
+            "section": section,
+            "values": {
+                option: value,
+            },
+        }
+        return await self.api_call(
+            API_RPC_CALL,
+            API_SUBSYS_UCI,
+            API_METHOD_SET,
+            params,
+        )
+
+    async def uci_commit_config(self, config: str):
+        """Commit changes to a UCI config."""
+        params = {
+            "config": config,
+        }
+        return await self.api_call(
+            API_RPC_CALL,
+            API_SUBSYS_UCI,
+            API_METHOD_COMMIT,
+            params,
         )
 
     async def list_modem_ctrl(self):
