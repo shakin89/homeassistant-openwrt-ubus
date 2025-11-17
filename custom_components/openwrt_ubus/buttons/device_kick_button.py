@@ -152,6 +152,16 @@ async def async_setup_entry(
     if coordinators_key not in hass.data[DOMAIN]:
         hass.data[DOMAIN][coordinators_key] = {}
     hass.data[DOMAIN][coordinators_key][entry.entry_id] = coordinator
+
+    # Also store in tracker_coordinators for cross-router lookups (uniqueid tracking method)
+    if tracking_method == "uniqueid":
+        tracker_coordinators_key = "tracker_coordinators"
+        if tracker_coordinators_key not in hass.data[DOMAIN]:
+            hass.data[DOMAIN][tracker_coordinators_key] = {}
+        # Use same entry_id key for consistency
+        if entry.entry_id not in hass.data[DOMAIN][tracker_coordinators_key]:
+            hass.data[DOMAIN][tracker_coordinators_key][entry.entry_id] = coordinator
+        _LOGGER.debug("Stored button coordinator for %s in tracker_coordinators (tracking_method=uniqueid)", entry.data['host'])
     
     # Track created buttons to avoid duplicates and allow re-enabling
     created_buttons = set()
@@ -201,9 +211,14 @@ async def async_setup_entry(
             # Create or update button entity for tracking
             if button_id not in button_entities:
                 # Create button object for tracking (HA will handle duplicates via unique_id)
-                # Always use host+mac for unique_id to avoid conflicts between routers
-                # button_id is used for internal tracking only
-                entity_unique_id = f"{host}_{mac.replace(':', '_')}"
+                # For uniqueid: use only MAC for single entity across all routers
+                # For combined: use host+MAC for separate entities per router
+                # NOTE: button_id is for internal tracking per-router, entity_unique_id is global
+                if tracking_method == "uniqueid":
+                    entity_unique_id = mac.replace(':', '_')
+                else:
+                    entity_unique_id = f"{host}_{mac.replace(':', '_')}"
+
                 kick_button = DeviceKickButton(
                     coordinator=coordinator,
                     device_mac=mac,
@@ -288,9 +303,44 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
         self._attr_unique_id = f"{DOMAIN}_{unique_id}_kick"
 
     def _get_device_info(self) -> dict:
-        """Get current device info from coordinator data."""
+        """Get current device info from coordinator data.
+
+        For uniqueid tracking method, searches across all routers to find where device is currently connected.
+        """
+        # First try local coordinator
         device_statistics = self.coordinator.data.get("device_statistics", {})
-        return device_statistics.get(self._device_mac, {})
+        device_data = device_statistics.get(self._device_mac, {})
+
+        if device_data and device_data.get("connected"):
+            return device_data
+
+        # If using uniqueid tracking and device not found locally, search other routers
+        if self._tracking_method == "uniqueid" and hasattr(self, 'hass'):
+            from homeassistant.const import DOMAIN as HA_DOMAIN
+
+            # Get all tracker coordinators
+            tracker_coordinators_key = "tracker_coordinators"
+            all_coordinators = self.hass.data.get(DOMAIN, {}).get(tracker_coordinators_key, {})
+
+            for entry_id, other_coordinator in all_coordinators.items():
+                # Skip current coordinator
+                if other_coordinator == self.coordinator:
+                    continue
+
+                # Check if coordinator has data
+                if not other_coordinator.data:
+                    continue
+
+                # Look for device in this coordinator's data
+                other_stats = other_coordinator.data.get("device_statistics", {})
+                device_data = other_stats.get(self._device_mac, {})
+
+                if device_data and device_data.get("connected"):
+                    # Found on another router
+                    return device_data
+
+        # Return empty dict if not found anywhere
+        return {}
 
     @property
     def suggested_object_id(self) -> str:

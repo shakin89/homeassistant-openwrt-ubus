@@ -348,23 +348,25 @@ async def _create_entities_for_devices(hass: HomeAssistant, entry: ConfigEntry,
                 "device_tracker", DOMAIN, unique_id
             )
 
+        # Always create entity object - HA will handle duplicates via unique_id
+        # This is critical: existing entities in registry need active Python objects too!
         if existing_entity_id:
             _LOGGER.debug(
-                "Device tracker entity %s already exists with entity_id %s, adding to known devices",
-                unique_id, existing_entity_id
+                "Device tracker entity %s already exists in registry, creating entity object for updates",
+                existing_entity_id
             )
-            # Add to known devices to prevent repeated checks
-            coordinator.known_devices.add(mac_address)
-            continue
 
-        # Create device tracker entity for the new device
+        # Create device tracker entity (new or existing)
         try:
             entity = OpenwrtDeviceTracker(coordinator, mac_address)
             # Ensure the entity is enabled by default
             entity._attr_entity_registry_enabled_default = True
             new_entities.append(entity)
             coordinator.known_devices.add(mac_address)
-            _LOGGER.debug("Created device tracker entity for %s with unique_id %s", mac_address, unique_id)
+            if existing_entity_id:
+                _LOGGER.debug("Created entity object for existing device tracker %s", existing_entity_id)
+            else:
+                _LOGGER.debug("Created new device tracker entity for %s with unique_id %s", mac_address, unique_id)
         except Exception as exc:
             _LOGGER.error("Failed to create entity for device %s: %s", mac_address, exc)
             continue
