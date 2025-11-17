@@ -128,6 +128,10 @@ async def async_setup_entry(
     # Migrate button unique_ids if needed
     await _migrate_kick_button_unique_ids(hass, entry, tracking_method)
 
+    # Get entity registry for checking existing entities
+    from homeassistant.helpers import entity_registry as er
+    entity_registry = er.async_get(hass)
+
     # Get shared data manager
     data_manager_key = f"data_manager_{entry.entry_id}"
     data_manager = hass.data[DOMAIN][data_manager_key]
@@ -196,6 +200,20 @@ async def async_setup_entry(
 
             # Create button if it doesn't exist (regardless of current availability)
             if button_id not in created_buttons:
+                # Check if entity already exists in registry (prevents duplicates across APs for uniqueid tracking)
+                button_unique_id = f"openwrt_ubus_{button_id}_kick"
+                existing_entity_id = entity_registry.async_get_entity_id(
+                    "button", DOMAIN, button_unique_id
+                )
+
+                if existing_entity_id:
+                    _LOGGER.debug(
+                        "Kick button entity %s already exists with entity_id %s, skipping creation",
+                        button_unique_id, existing_entity_id
+                    )
+                    created_buttons.add(button_id)
+                    continue
+
                 # Create new kick button
                 kick_button = DeviceKickButton(
                     coordinator=coordinator,
@@ -302,7 +320,7 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
                 device_name = device_info.get("hostname", self._initial_device_name)
 
                 # Clean device name for entity_id (remove special chars, use lowercase)
-                if device_name == "Unknown" or device_name == "*" or device_name == self._device_mac:
+                if not device_name or device_name == "Unknown" or device_name == "*" or device_name == self._device_mac:
                     clean_name = self._device_mac.replace(":", "_").lower()
                 else:
                     # Remove domain suffix if present and clean
@@ -320,10 +338,10 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
         device_name = device_info.get("hostname", self._initial_device_name)
         ap_ssid = device_info.get("ap_ssid", "Unknown Network")
 
-        if device_name == "Unknown" or device_name == "*" or device_name == self._device_mac:
+        if not device_name or device_name == "Unknown" or device_name == "*" or device_name == self._device_mac:
             return f"Kick {self._device_mac} from {ap_ssid}"
         else:
-            return f"Kick {device_name.split(".")[0].replace("-", "_").replace(" ", "_").lower()} from {ap_ssid}"
+            return f"Kick {device_name} from {ap_ssid}"
 
     @property
     def device_info(self):

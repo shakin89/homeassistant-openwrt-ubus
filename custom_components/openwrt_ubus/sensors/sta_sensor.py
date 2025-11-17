@@ -480,7 +480,12 @@ async def async_setup_entry(
                 # Check each sensor type for this device
                 device_sensors_to_add = []
                 for description in SENSOR_DESCRIPTIONS:
-                    unique_id = f"{entry.data[CONF_HOST]}_sensor_{mac_address}_{description.key}"
+                    # Build unique_id matching the format used by DeviceStatisticsSensor
+                    if tracking_method == "uniqueid":
+                        unique_id = f"sensor_{mac_address}_{description.key}"
+                    else:
+                        unique_id = f"{entry.data[CONF_HOST]}_sensor_{mac_address}_{description.key}"
+
                     existing_entity_id = entity_registry.async_get_entity_id(
                         "sensor", DOMAIN, unique_id
                     )
