@@ -316,8 +316,6 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
 
         # If using uniqueid tracking and device not found locally, search other routers
         if self._tracking_method == "uniqueid" and hasattr(self, 'hass'):
-            from homeassistant.const import DOMAIN as HA_DOMAIN
-
             # Get all tracker coordinators
             tracker_coordinators_key = "tracker_coordinators"
             all_coordinators = self.hass.data.get(DOMAIN, {}).get(tracker_coordinators_key, {})
@@ -357,7 +355,7 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
             # Check if has_entity_name is enabled
             if getattr(self, '_attr_has_entity_name', False):
                 # Home Assistant will add device name automatically, so we only provide the suffix
-                return f"kick_from_{ap_host}"
+                return f"kick"
             else:
                 # We need to include the device name ourselves
                 device_info = self._get_device_info()
@@ -370,7 +368,7 @@ class DeviceKickButton(CoordinatorEntity[SharedDataUpdateCoordinator], ButtonEnt
                     # Remove domain suffix if present and clean
                     clean_name = device_name.split(".")[0].replace("-", "_").replace(" ", "_").lower()
 
-                return f"{clean_name}_kick_from_{ap_host}"
+                return f"{clean_name}_kick"
         else:
             # For combined: use default behavior
             return None

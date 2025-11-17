@@ -770,16 +770,18 @@ class DeviceStatisticsSensor(CoordinatorEntity, SensorEntity):
             "ap_ssid": device_data.get("ap_ssid", "Unknown SSID"),
         }
 
-        # Add extra attributes using mapping
-        for attr_key, mapping in EXTRA_ATTRIBUTES_MAPPING.items():
-            try:
-                # Check if required data exists
-                if _has_required_data(device_data, mapping.data_keys):
-                    value = mapping.convert_function(device_data, mapping.data_keys)
-                    if value is not None:  # Only add attribute if value is not None
-                        attributes[attr_key] = value
-            except (KeyError, TypeError, ValueError) as exc:
-                _LOGGER.debug("Error getting attribute %s for %s: %s", attr_key, self._mac_address, exc)
-                continue
+        # Add extra technical attributes ONLY to signal_strength sensor
+        if self.entity_description.key == "signal":
+            # Add extra attributes using mapping
+            for attr_key, mapping in EXTRA_ATTRIBUTES_MAPPING.items():
+                try:
+                    # Check if required data exists
+                    if _has_required_data(device_data, mapping.data_keys):
+                        value = mapping.convert_function(device_data, mapping.data_keys)
+                        if value is not None:  # Only add attribute if value is not None
+                            attributes[attr_key] = value
+                except (KeyError, TypeError, ValueError) as exc:
+                    _LOGGER.debug("Error getting attribute %s for %s: %s", attr_key, self._mac_address, exc)
+                    continue
 
         return attributes
