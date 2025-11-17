@@ -198,37 +198,31 @@ async def async_setup_entry(
             # Get SSID for user-friendly naming
             ap_ssid = device_info.get("ap_ssid", ap_device)
 
-            # Create button if it doesn't exist (regardless of current availability)
-            if button_id not in created_buttons:
-                # Check if entity already exists in registry (prevents duplicates across APs for uniqueid tracking)
-                button_unique_id = f"openwrt_ubus_{button_id}_kick"
-                existing_entity_id = entity_registry.async_get_entity_id(
-                    "button", DOMAIN, button_unique_id
-                )
-
-                if existing_entity_id:
-                    _LOGGER.debug(
-                        "Kick button entity %s already exists with entity_id %s, skipping creation",
-                        button_unique_id, existing_entity_id
-                    )
-                    created_buttons.add(button_id)
-                    continue
-
-                # Create new kick button
+            # Create or update button entity for tracking
+            if button_id not in button_entities:
+                # Create button object for tracking (HA will handle duplicates via unique_id)
+                # Always use host+mac for unique_id to avoid conflicts between routers
+                # button_id is used for internal tracking only
+                entity_unique_id = f"{host}_{mac.replace(':', '_')}"
                 kick_button = DeviceKickButton(
                     coordinator=coordinator,
                     device_mac=mac,
                     device_name=device_info.get("hostname", f"Device {mac}"),
-                    unique_id=button_id,
+                    unique_id=entity_unique_id,
                     host=host,
                     tracking_method=tracking_method
                 )
 
-                new_buttons.append(kick_button)
-                created_buttons.add(button_id)
+                # Add to button_entities for tracking and updates
                 button_entities[button_id] = kick_button
+
+                # Always add to new_buttons - HA will handle existing entities via unique_id
+                new_buttons.append(kick_button)
                 _LOGGER.debug("Created kick button for device %s (%s) on AP %s (%s)",
                              device_info.get("hostname", mac), mac, ap_ssid, ap_device)
+
+            # Mark button as seen in this update cycle
+            created_buttons.add(button_id)
         
         # Add new buttons if any
         if new_buttons:
