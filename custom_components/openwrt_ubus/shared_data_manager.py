@@ -428,11 +428,12 @@ class SharedUbusDataManager:
         mac2name = {}
         client = await self._get_ubus_client()
 
-        # First, get mappings from /etc/ethers (highest priority)
+        # Get mappings from /etc/ethers
         try:
-            ethers_mapping = await client.get_ethers_mapping()
-            mac2name.update(ethers_mapping)
-            _LOGGER.debug("Loaded %d entries from /etc/ethers", len(ethers_mapping))
+            if dhcp_software == "ethers":
+                ethers_mapping = await client.get_ethers_mapping()
+                mac2name.update(ethers_mapping)
+                _LOGGER.debug("Loaded %d entries from /etc/ethers", len(ethers_mapping))
         except Exception as exc:
             _LOGGER.debug("Could not read /etc/ethers: %s", exc)
 
