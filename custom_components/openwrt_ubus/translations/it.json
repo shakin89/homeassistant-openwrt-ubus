@@ -10,7 +10,7 @@
           "password": "Password",
           "wireless_software": "Software Wireless",
           "dhcp_software": "Software DHCP",
-          "tracking_method": "Metodo di Tracciamento"
+          "tracking_method": "Metodo di tracciamento"
         }
       },
       "sensors": {
