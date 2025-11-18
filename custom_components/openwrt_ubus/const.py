@@ -10,8 +10,10 @@ CONF_DHCP_SOFTWARE = "dhcp_software"
 CONF_WIRELESS_SOFTWARE = "wireless_software"
 DEFAULT_DHCP_SOFTWARE = "dnsmasq"
 DEFAULT_WIRELESS_SOFTWARE = "iwinfo"
-DHCP_SOFTWARES = ["dnsmasq", "odhcpd", "none"]
+DHCP_SOFTWARES = ["dnsmasq", "odhcpd", "ethers", "none"]
 WIRELESS_SOFTWARES = ["hostapd", "iwinfo", "none"]
+TRACKING_METHODS = ["uniqueid", "combined"]
+CONF_TRACKING_METHOD = "tracking_method"
 
 # Sensor enable/disable configuration
 CONF_ENABLE_QMODEM_SENSORS = "enable_qmodem_sensors"
@@ -38,6 +40,7 @@ DEFAULT_ENABLE_SYSTEM_SENSORS = True
 DEFAULT_ENABLE_AP_SENSORS = True
 DEFAULT_ENABLE_ETH_SENSORS = True
 DEFAULT_ENABLE_SERVICE_CONTROLS = False
+DEFAULT_TRACKING_METHOD = "combined"
 
 DEFAULT_ENABLE_DEVICE_KICK_BUTTONS = False
 DEFAULT_SELECTED_SERVICES = []
